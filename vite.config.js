@@ -7,23 +7,14 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
-  resolve: {
-    alias: {
-      'firebase/app': 'firebase/compat/app',
-      'firebase/auth': 'firebase/compat/auth',
-      'firebase/firestore': 'firebase/compat/firestore',
-      'firebase/storage': 'firebase/compat/storage',
-      'firebase/functions': 'firebase/compat/functions',
-    }
-  },
   build: {
     outDir: 'dist',
-    sourcemap: false,
+    sourcemap: false, // Disable sourcemaps for smaller build
     rollupOptions: {
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
-          firebase: ['firebase/compat'],
+          firebase: ['firebase'],
         }
       }
     }

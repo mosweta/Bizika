@@ -19,7 +19,7 @@ export default function Login({ onLoginSuccess }) {
     setLoading(true);
     
     try {
-      const userCredential = await auth.signInWithEmailAndPassword(email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
 
       // Fetch user data from Firestore
