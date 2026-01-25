@@ -1,0 +1,51 @@
+// firebase/firestore.rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------- Users ----------------
+    match /users/{userId} {
+      // Users can read their own profile
+      allow read, update: if request.auth != null && request.auth.uid == userId;
+      // Users can create themselves (signup)
+      allow create: if request.auth != null && request.auth.uid == userId;
+      // No delete by users
+      allow delete: if false;
+    }
+
+    // ---------------- Courses ----------------
+    match /courses/{courseId} {
+      // Students can read only if enrolled
+      allow read: if request.auth != null &&
+        exists(/databases/$(database)/documents/enrollments/$(request.auth.uid + "_" + courseId));
+      
+      // Admin can create/update/delete courses
+      allow create, update, delete: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+
+      // ---------------- Lessons ----------------
+      match /lessons/{lessonId} {
+        // Students can read lessons only if enrolled
+        allow read: if request.auth != null &&
+          exists(/databases/$(database)/documents/enrollments/$(request.auth.uid + "_" + courseId));
+        // Admin can create/update/delete lessons
+        allow create, update, delete: if request.auth != null &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+      }
+    }
+
+    // ---------------- Enrollments ----------------
+    match /enrollments/{enrollmentId} {
+      // Users can read their own enrollments
+      allow read: if request.auth != null && enrollmentId.startsWith(request.auth.uid + "_");
+      // Admin can create/update/delete enrollments
+      allow create, update, delete: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    // ---------------- Default deny ----------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
