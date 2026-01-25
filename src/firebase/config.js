@@ -1,9 +1,9 @@
-// src/firebase/config.js - UPDATED FOR CLOUDFLARE PAGES
-import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
-import { getFunctions } from "firebase/functions";
+// src/firebase/config.js - COMPLETE COMPAT VERSION
+import firebase from "firebase/compat/app";
+import "firebase/compat/auth";
+import "firebase/compat/firestore";
+import "firebase/compat/storage";
+import "firebase/compat/functions";
 
 // Debug logging for Cloudflare Pages
 console.log("🌐 Environment:", import.meta.env.MODE);
@@ -45,28 +45,26 @@ if (import.meta.env.PROD) {
   }
 }
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// Initialize Firebase - COMPAT STYLE
+const app = firebase.initializeApp(firebaseConfig);
 
-// Export services
-export const auth = getAuth(app);
-export const db = getFirestore(app);
-export const storage = getStorage(app);
+// Export services - COMPAT STYLE (not modular!)
+export const auth = firebase.auth();
+export const db = firebase.firestore();
+export const storage = firebase.storage();
 
-// IMPORTANT: Specify the region for Cloud Functions
-// Your functions are deployed in africa-south1
-export const functions = getFunctions(app, "africa-south1");
+// Functions with region - COMPAT STYLE
+export const functions = firebase.app().functions("africa-south1");
 
 // Optional: Connect to emulator in development
 if (import.meta.env.DEV) {
   console.log("🔧 Development mode - enabling debug features");
   
-  // Enable Firestore logging
-  import('firebase/firestore').then(({ enableIndexedDbPersistence }) => {
-    enableIndexedDbPersistence(db).catch((err) => {
+  // Enable Firestore persistence (compat style)
+  db.enablePersistence()
+    .catch((err) => {
       console.warn("Firestore persistence error:", err);
     });
-  });
 }
 
 export default app;
