@@ -42,7 +42,7 @@ import {
 } from "lucide-react";
 
 // Import R2 Service
-import R2Service from "/../Users/Deogracious/Bizika/bizika/src/services/r2service";
+import R2Service from "./r2service";
 
 // File type mapping
 const FILE_TYPES = {
