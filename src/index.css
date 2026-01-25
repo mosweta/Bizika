@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* In your global CSS file or component */
+.youtube-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.youtube-container iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Make the fullscreen button work properly */
+:fullscreen .youtube-container,
+:-webkit-full-screen .youtube-container,
+:-moz-full-screen .youtube-container,
+:-ms-fullscreen .youtube-container {
+  width: 100vw;
+  height: 100vh;
+  background: black;
+}
