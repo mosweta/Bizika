@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { auth, db } from "../firebase/config";
 import { signOut } from "firebase/auth";
 import { 
@@ -288,14 +288,25 @@ export default function StudentDashboard() {
         <div className="px-4 py-3 sm:px-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
+              <Link to="/" className="flex items-center space-x-3">
+                <img 
+                  src="/logo4.png" 
+                  alt="Pavoc LMS Logo" 
+                  className="h-15 w-15 rounded-xl object-cover"
+                />
+                <span className="text-xl font-bold text-gray-900">Pavoc LMS</span>
+                <p className="text-xs text-gray-500">Student Dashboard</p>
+              </Link>
+            </div>
+            {/* <div className="flex items-center gap-3">
               <div className="p-2 bg-blue-600 rounded-lg">
                 <BookOpen className="h-6 w-6 text-white" />
               </div>
               <div>
                 <h1 className="text-xl font-bold text-gray-900">Bizika Learning</h1>
-                <p className="text-xs text-gray-500">Student Dashboard</p>
+                
               </div>
-            </div>
+            </div> */}
             
             <div className="flex items-center gap-4">
               <div className="hidden sm:flex items-center gap-3">
@@ -402,17 +413,7 @@ export default function StudentDashboard() {
 
         {/* My Courses Section */}
         <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">My Courses</h3>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-              <input
-                type="text"
-                placeholder="Search courses..."
-                className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm"
-              />
-            </div>
-          </div>
+          
           
           {enrolledCourses.length === 0 ? (
             <EmptyState />

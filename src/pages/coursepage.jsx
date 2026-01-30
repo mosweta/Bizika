@@ -1,19 +1,20 @@
 // src/components/CoursePage.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { auth, db, functions } from "../firebase/config";
+import { auth, db } from "../firebase/config";
 import EdpuzzleVideoPlayer from './videoplayer';
 import { 
   doc, 
   getDoc, 
   collection, 
   getDocs,
+  setDoc,
   updateDoc,
   serverTimestamp,
   query,
+  onSnapshot,
   where
 } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
 import {
   BookOpen,
   Clock,
@@ -27,10 +28,7 @@ import {
   FileSpreadsheet,
   Presentation,
   Folder,
-  ExternalLink,
   Loader2,
-  Grid,
-  List,
   File,
   Image as ImageIcon,
   Video,
@@ -190,35 +188,62 @@ export default function CoursePage() {
   const [activeLesson, setActiveLesson] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [downloading, setDownloading] = useState(null);
-  const [resourceViewMode, setResourceViewMode] = useState("list");
   const [showMobileLessons, setShowMobileLessons] = useState(false);
   const [expandedResources, setExpandedResources] = useState({
     lessonResources: false,
     allResources: false
   });
   
-  const currentLessonIndex = activeLesson 
-    ? lessons.findIndex(lesson => lesson.id === activeLesson.id)
-    : -1;
-  const hasNextLesson = currentLessonIndex < lessons.length - 1;
-  const hasPreviousLesson = currentLessonIndex > 0;
+  // Progress tracking states
+  const [videoProgress, setVideoProgress] = useState({});
+  const [isAutoCompleting, setIsAutoCompleting] = useState(false);
+  const completingLessonRef = useRef(null);
+
+  // Real-time listener for course updates (including enrolledCount)
+  useEffect(() => {
+    if (!courseId) return;
+    
+    const courseRef = doc(db, "courses", courseId);
+    
+    const unsubscribe = onSnapshot(courseRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const courseData = { id: docSnap.id, ...docSnap.data() };
+        setCourse(courseData);
+        console.log(`📊 Course updated: ${courseData.enrolledCount || 0} students enrolled`);
+      }
+    }, (error) => {
+      console.error("Error listening to course updates:", error);
+    });
+    
+    return () => unsubscribe();
+  }, [courseId]);
 
   // Fetch questions for active lesson
   useEffect(() => {
     const fetchQuestions = async () => {
-      if (activeLesson) {
-        const questionsRef = collection(db, "courses", courseId, "lessons", activeLesson.id, "questions");
-        const questionsSnap = await getDocs(questionsRef);
-        const questionsData = questionsSnap.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setQuestions(questionsData.sort((a, b) => a.timestamp - b.timestamp));
+      if (activeLesson && courseId) {
+        try {
+          if (!user) {
+            console.log('User not authenticated, skipping questions fetch');
+            return;
+          }
+          
+          const questionsRef = collection(db, "courses", courseId, "lessons", activeLesson.id, "questions");
+          const questionsSnap = await getDocs(questionsRef);
+          const questionsData = questionsSnap.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          setQuestions(questionsData.sort((a, b) => a.timestamp - b.timestamp));
+        } catch (error) {
+          console.error("Error fetching questions:", error);
+          setQuestions([]);
+        }
       }
     };
     
     fetchQuestions();
-  }, [activeLesson, courseId]);
+  }, [activeLesson, courseId, user]);
 
   // Auth state and course data
   useEffect(() => {
@@ -238,21 +263,27 @@ export default function CoursePage() {
     try {
       setLoading(true);
       
+      // 1. Fetch course document (enrolledCount comes from Cloud Function)
       const courseDoc = await getDoc(doc(db, "courses", courseId));
       if (!courseDoc.exists()) {
         navigate("/courses");
         return;
       }
-      setCourse({ id: courseDoc.id, ...courseDoc.data() });
+      
+      const courseData = { id: courseDoc.id, ...courseDoc.data() };
+      setCourse(courseData);
 
+      // 2. Fetch lessons
       const lessonsRef = collection(db, "courses", courseId, "lessons");
       const lessonsSnap = await getDocs(lessonsRef);
       const lessonsData = lessonsSnap.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
-      setLessons(lessonsData.sort((a, b) => a.order - b.order));
+      const sortedLessons = lessonsData.sort((a, b) => a.order - b.order);
+      setLessons(sortedLessons);
 
+      // 3. Fetch user's enrollment
       const enrollmentsRef = collection(db, "enrollments");
       const enrollmentQuery = query(
         enrollmentsRef,
@@ -269,8 +300,14 @@ export default function CoursePage() {
         });
       }
 
-      if (lessonsData.length > 0 && !activeLesson) {
-        setActiveLesson(lessonsData[0]);
+      // 4. Set active lesson if none is selected
+      if (sortedLessons.length > 0 && !activeLesson) {
+        const userEnrollment = enrollmentSnap.empty ? null : enrollmentSnap.docs[0].data();
+        const completedLessons = userEnrollment?.completedLessons || [];
+        
+        // Find first incomplete lesson
+        const firstIncomplete = sortedLessons.find(lesson => !completedLessons.includes(lesson.id));
+        setActiveLesson(firstIncomplete || sortedLessons[0]);
       }
 
     } catch (error) {
@@ -280,29 +317,105 @@ export default function CoursePage() {
     }
   };
 
-  const markLessonComplete = async (lessonId) => {
-    if (!enrollment) return;
+  // UPDATED: Only marks lesson complete, doesn't advance to next
+  const autoCompleteLesson = useCallback(async () => {
+    if (!activeLesson || !enrollment) return;
+
+    // 🔒 HARD GUARD (prevents duplicates)
+    if (completingLessonRef.current === activeLesson.id) {
+      console.log('⏭️ Skipping duplicate completion for lesson:', activeLesson.id);
+      return;
+    }
+
+    if (enrollment.completedLessons?.includes(activeLesson.id)) {
+      console.log('📚 Lesson already completed:', activeLesson.id);
+      return;
+    }
 
     try {
-      const completedLessons = enrollment.completedLessons || [];
-      
-      if (!completedLessons.includes(lessonId)) {
-        const newCompletedLessons = [...completedLessons, lessonId];
-        
-        await updateDoc(doc(db, "enrollments", enrollment.id), {
-          completedLessons: newCompletedLessons,
-          progress: Math.round((newCompletedLessons.length / lessons.length) * 100),
-          lastAccessed: serverTimestamp()
-        });
+      completingLessonRef.current = activeLesson.id;
+      setIsAutoCompleting(true);
+      console.log('🎯 Auto-marking lesson complete:', activeLesson.title);
 
-        setEnrollment(prev => ({
-          ...prev,
-          completedLessons: newCompletedLessons,
-          progress: Math.round((newCompletedLessons.length / lessons.length) * 100)
-        }));
+      const completedLessons = enrollment.completedLessons || [];
+      const newCompletedLessons = [...completedLessons, activeLesson.id];
+      const progressPercentage = Math.round(
+        (newCompletedLessons.length / lessons.length) * 100
+      );
+
+      await updateDoc(doc(db, "enrollments", enrollment.id), {
+        completedLessons: newCompletedLessons,
+        progress: progressPercentage,
+        lastAccessed: serverTimestamp()
+      });
+
+      console.log('✅ Updated Firestore: Lesson marked complete');
+
+      setEnrollment(prev => ({
+        ...prev,
+        completedLessons: newCompletedLessons,
+        progress: progressPercentage
+      }));
+
+      // 🔄 NO auto-advance to next lesson - user stays on current video
+      console.log('🛑 Auto-advance disabled - user stays on current lesson');
+      
+    } catch (e) {
+      console.error('❌ Auto-completion error:', e);
+    } finally {
+      setIsAutoCompleting(false);
+      // Reset ref after completion
+      setTimeout(() => {
+        completingLessonRef.current = null;
+        console.log('🔄 Reset completion ref');
+      }, 1500);
+    }
+  }, [activeLesson, enrollment, lessons]);
+
+  // NEW: Manual completion with optional next lesson navigation
+  const markCompleteAndGoNext = async () => {
+    if (!activeLesson || !enrollment) return;
+
+    if (enrollment.completedLessons?.includes(activeLesson.id)) {
+      console.log('📚 Lesson already completed');
+      return;
+    }
+
+    try {
+      setIsAutoCompleting(true);
+
+      const completedLessons = enrollment.completedLessons || [];
+      const newCompletedLessons = [...completedLessons, activeLesson.id];
+      const progressPercentage = Math.round(
+        (newCompletedLessons.length / lessons.length) * 100
+      );
+
+      await updateDoc(doc(db, "enrollments", enrollment.id), {
+        completedLessons: newCompletedLessons,
+        progress: progressPercentage,
+        lastAccessed: serverTimestamp()
+      });
+
+      setEnrollment(prev => ({
+        ...prev,
+        completedLessons: newCompletedLessons,
+        progress: progressPercentage
+      }));
+
+      // 🔄 Optionally navigate to next lesson (uncomment if you want manual next navigation)
+      /*
+      const currentIndex = lessons.findIndex(l => l.id === activeLesson.id);
+      const nextLesson = lessons[currentIndex + 1];
+      if (nextLesson) {
+        console.log('⏭️ Manual navigation to next lesson');
+        setTimeout(() => setActiveLesson(nextLesson), 800);
       }
-    } catch (error) {
-      console.error("Error marking lesson complete:", error);
+      */
+
+    } catch (e) {
+      console.error('❌ Completion error:', e);
+    } finally {
+      setIsAutoCompleting(false);
     }
   };
 
@@ -313,67 +426,110 @@ export default function CoursePage() {
         {
           userAnswer: question.userAnswer,
           answered: true,
-          answeredAt: question.answeredAt
+          answeredAt: serverTimestamp()
         }
       );
       
-      setQuestions(prev => 
-        prev.map(q => q.id === question.id ? question : q)
-      );
+      setQuestions(prev => prev.map(q => q.id === question.id ? question : q));
     } catch (error) {
       console.error("Error saving question answer:", error);
     }
   };
 
-  // Download resource
   const handleDownloadResource = async (resource) => {
     try {
-      setDownloading(resource.key);
+      setDownloading(resource.key || resource.id);
       
       const accountId = import.meta.env.VITE_R2_ACCOUNT_ID;
       if (!accountId) {
         throw new Error("Configuration error: Missing R2 account ID");
       }
       
-      const publicUrl = `https://pub-${accountId}.r2.dev/${resource.key}`;
+      const publicUrl = `https://pub-${accountId}.r2.dev/${resource.key || resource.filePath}`;
+      const response = await fetch(publicUrl);
       
-      // Create download link with filename
+      if (!response.ok) throw new Error(`Failed to fetch file: ${response.status}`);
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = publicUrl;
-      link.download = resource.name || resource.originalName || 'download';
-      link.target = '_blank';
       
+      let filename = resource.name || resource.originalName || 'download';
+      const contentDisposition = response.headers.get('content-disposition');
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+      
+      if (!filename.includes('.')) {
+        const contentType = response.headers.get('content-type');
+        if (contentType) {
+          const extension = contentType.split('/').pop();
+          filename = `${filename}.${extension}`;
+        }
+      }
+      
+      link.href = url;
+      link.download = filename;
+      link.target = '_blank';
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
       
-      setTimeout(() => setDownloading(null), 1000);
+      setTimeout(() => {
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        setDownloading(null);
+      }, 100);
       
     } catch (error) {
-      console.error("❌ Download error:", error);
-      alert(`Download failed: ${error.message}`);
+      console.error("Download error:", error);
+      try {
+        const accountId = import.meta.env.VITE_R2_ACCOUNT_ID;
+        if (accountId) {
+          const publicUrl = `https://pub-${accountId}.r2.dev/${resource.key || resource.filePath}`;
+          window.open(publicUrl, '_blank');
+        }
+      } catch (fallbackError) {
+        alert(`Download failed: ${error.message}`);
+      }
       setDownloading(null);
     }
   };
 
   const handlePreviewResource = async (resource) => {
     try {
-      setDownloading(resource.key);
+      setDownloading(resource.key || resource.id);
       
-      const accountId = import.meta.env.VITE_R2_ACCOUNT_ID;
-      if (!accountId) {
-        throw new Error("Configuration error: Missing R2 account ID");
+      const previewableTypes = ['pdf', 'image', 'video', 'text'];
+      const fileType = getFileType(resource.name || resource.originalName);
+      
+      if (previewableTypes.includes(fileType)) {
+        let previewUrl;
+        
+        if (resource.url && resource.url.includes('firebasestorage.googleapis.com')) {
+          previewUrl = resource.url;
+        } else if (resource.key || resource.filePath) {
+          const accountId = import.meta.env.VITE_R2_ACCOUNT_ID;
+          if (accountId) {
+            previewUrl = `https://pub-${accountId}.r2.dev/${resource.key || resource.filePath}`;
+          }
+        }
+        
+        if (previewUrl) {
+          window.open(previewUrl, '_blank');
+        } else {
+          handleDownloadResource(resource);
+        }
+      } else {
+        handleDownloadResource(resource);
       }
-      
-      const publicUrl = `https://pub-${accountId}.r2.dev/${resource.key}`;
-      window.open(publicUrl, '_blank');
-      
-      setTimeout(() => setDownloading(null), 1000);
-      
     } catch (error) {
-      console.error("❌ Preview error:", error);
-      alert(`Preview failed: ${error.message}`);
-      setDownloading(null);
+      console.error("Preview error:", error);
+      handleDownloadResource(resource);
+    } finally {
+      setTimeout(() => setDownloading(null), 1000);
     }
   };
 
@@ -404,22 +560,117 @@ export default function CoursePage() {
     return allResources;
   };
 
-  // Get resources for active lesson
-  const getActiveLessonResources = () => {
-    if (!activeLesson) return [];
+  const currentLessonIndex = activeLesson 
+    ? lessons.findIndex(lesson => lesson.id === activeLesson.id)
+    : -1;
+  const hasNextLesson = currentLessonIndex < lessons.length - 1;
+  const hasPreviousLesson = currentLessonIndex > 0;
+
+  // Handle video progress updates - ONLY updates progress, NO auto-completion
+  const handleVideoProgress = useCallback((lessonId, progress) => {
+    if (!user || !courseId) return;
     
-    const resourceArrays = [
-      ...(activeLesson.slides || []),
-      ...(activeLesson.documents || []),
-      ...(activeLesson.templates || []),
-      ...(activeLesson.resources || [])
-    ];
+    // Update local state immediately
+    setVideoProgress(prev => ({
+      ...prev,
+      [lessonId]: Math.min(100, Math.max(0, progress))
+    }));
+
     
-    return resourceArrays.filter(resource => resource);
-  };
+  }, [user, courseId]);
 
   const allResources = getAllResources();
-  const activeLessonResources = getActiveLessonResources();
+
+  // Update the lesson list to show progress bars
+  const renderLessonList = () => {
+    return lessons.map((lesson, index) => {
+      const isCompleted = enrollment?.completedLessons?.includes(lesson.id);
+      const isActive = activeLesson?.id === lesson.id;
+      const lessonResources = [
+        ...(lesson.slides || []),
+        ...(lesson.documents || []),
+        ...(lesson.templates || []),
+        ...(lesson.resources || [])
+      ].filter(r => r);
+      
+      const lessonProgress = videoProgress[lesson.id] || 0;
+      
+      return (
+        <div
+          key={`lesson-${lesson.id}`}
+          className={`p-4 border-b border-gray-100 cursor-pointer transition-colors ${
+            isActive ? "bg-blue-50" : "hover:bg-gray-50"
+          }`}
+          onClick={() => {
+            // Don't change lesson if currently auto-completing
+            if (isAutoCompleting) {
+              console.log('⏸️ Skipping lesson change during auto-completion');
+              return;
+            }
+            setActiveLesson(lesson);
+            if (window.innerWidth < 1024) {
+              setShowMobileLessons(false);
+            }
+          }}
+        >
+          <div className="flex items-start gap-3">
+            <div className={`flex-shrink-0 h-8 w-8 rounded-full flex items-center justify-center ${
+              isCompleted ? "bg-green-100" : "bg-gray-100"
+            }`}>
+              {isCompleted ? (
+                <CheckCircle className="h-4 w-4 text-green-600" />
+              ) : (
+                <span className="text-sm font-medium text-gray-600">{index + 1}</span>
+              )}
+            </div>
+            
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <h4 className={`font-medium text-sm md:text-base ${
+                  isCompleted ? "text-green-700" : "text-gray-900"
+                }`}>
+                  {lesson.title}
+                </h4>
+                <span className="text-xs text-gray-500 whitespace-nowrap">{lesson.duration}</span>
+              </div>
+              
+              {lessonProgress > 0 && !isCompleted && (
+                <div className="mb-2">
+                  <div className="flex justify-between text-xs text-gray-500 mb-0.5">
+                    <span>Progress</span>
+                    <span>{lessonProgress}%</span>
+                  </div>
+                  <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full ${
+                        lessonProgress >= 95 ? "bg-green-500" : 
+                        lessonProgress >= 50 ? "bg-blue-500" : 
+                        lessonProgress > 0 ? "bg-yellow-500" : "bg-gray-300"
+                      } rounded-full transition-all duration-300`}
+                      style={{ width: `${lessonProgress}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+              
+              <p className="text-sm text-gray-600 mt-1 line-clamp-2">
+                {lesson.description}
+              </p>
+              
+              {lessonResources.length > 0 && (
+                <div className="mt-2 flex items-center gap-1">
+                  <Folder className="h-3 w-3 text-gray-400" />
+                  <span className="text-xs text-gray-500">
+                    {lessonResources.length} resource{lessonResources.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    });
+  };
 
   if (loading) {
     return (
@@ -479,6 +730,7 @@ export default function CoursePage() {
               <button
                 onClick={() => setShowMobileLessons(!showMobileLessons)}
                 className="p-2 hover:bg-gray-100 rounded-lg"
+                disabled={isAutoCompleting}
               >
                 {showMobileLessons ? <X size={20} /> : <Menu size={20} />}
               </button>
@@ -522,7 +774,7 @@ export default function CoursePage() {
 
       <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
-          {/* Left Column - Course Content (Mobile: Full width, Desktop: 2/3) */}
+          {/* Left Column - Course Content */}
           <div className="lg:col-span-2 space-y-4 md:space-y-6">
             {/* Video Player */}
             {activeLesson ? (
@@ -533,17 +785,29 @@ export default function CoursePage() {
                   hasNextLesson={hasNextLesson}
                   hasPreviousLesson={hasPreviousLesson}
                   onNextLesson={() => {
-                    if (hasNextLesson) {
+                    if (hasNextLesson && !isAutoCompleting) {
+                      console.log('⏭️ Manual next lesson navigation');
                       setActiveLesson(lessons[currentLessonIndex + 1]);
                     }
                   }}
                   onPreviousLesson={() => {
-                    if (hasPreviousLesson) {
+                    if (hasPreviousLesson && !isAutoCompleting) {
+                      console.log('⏮️ Manual previous lesson navigation');
                       setActiveLesson(lessons[currentLessonIndex - 1]);
                     }
                   }}
                   questions={questions}
                   onQuestionAnswered={handleQuestionAnswered}
+                  lessonId={activeLesson.id}
+                  onProgressUpdate={handleVideoProgress}
+                  markLessonComplete={autoCompleteLesson} // UPDATED: Uses autoCompleteLesson (no auto-advance)
+                  isLessonCompleted={enrollment?.completedLessons?.includes(activeLesson.id)}
+                  isAutoCompleting={isAutoCompleting}
+                  autoComplete={true}
+                  onVideoEnd={() => {
+                    console.log(`🎬 Video ended for lesson: ${activeLesson.title}`);
+                    // Video end auto-completion is handled inside the video player
+                  }}
                 />
                 
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mt-4 gap-3">
@@ -553,16 +817,60 @@ export default function CoursePage() {
                   </div>
                   
                   <button
-                    onClick={() => markLessonComplete(activeLesson.id)}
-                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 text-sm md:text-base w-full sm:w-auto justify-center"
-                    disabled={enrollment?.completedLessons?.includes(activeLesson.id)}
+                    onClick={() => markCompleteAndGoNext()} // UPDATED: Uses manual function
+                    disabled={enrollment?.completedLessons?.includes(activeLesson.id) || isAutoCompleting}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 text-sm md:text-base w-full sm:w-auto justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <CheckCircle size={18} />
-                    {enrollment?.completedLessons?.includes(activeLesson.id) 
-                      ? "Completed" 
-                      : "Mark Complete"}
+                    {isAutoCompleting ? (
+                      <>
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                        Completing...
+                      </>
+                    ) : enrollment?.completedLessons?.includes(activeLesson.id) ? (
+                      <>
+                        <CheckCircle size={18} />
+                        Completed
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle size={18} />
+                        Mark Complete
+                      </>
+                    )}
                   </button>
                 </div>
+                
+                {/* Completion notification */}
+                {isAutoCompleting && (
+                  <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <p className="text-sm text-green-700">
+                        Lesson marked as complete! You can continue watching or select the next lesson.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Next lesson suggestion */}
+                {enrollment?.completedLessons?.includes(activeLesson.id) && hasNextLesson && (
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <ChevronRight className="h-4 w-4 text-blue-600" />
+                        <p className="text-sm text-blue-700">
+                          Ready to continue? Next lesson available
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setActiveLesson(lessons[currentLessonIndex + 1])}
+                        className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                      >
+                        Go to Next
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="bg-white rounded-xl shadow border p-6 md:p-8 text-center">
@@ -576,26 +884,8 @@ export default function CoursePage() {
               </div>
             )}
 
-            {/* Mobile: Collapsible Resources Sections */}
+            {/* Mobile Resources Sections */}
             <div className="lg:hidden space-y-4">
-              {/* Active Lesson Resources (Mobile) */}
-              {activeLesson && activeLessonResources.length > 0 && (
-                <MobileResourcesSection
-                  title="Lesson Resources"
-                  description={`Downloadable materials for ${activeLesson.title}`}
-                  resources={activeLessonResources}
-                  onDownload={handleDownloadResource}
-                  onPreview={handlePreviewResource}
-                  downloading={downloading}
-                  isExpanded={expandedResources.lessonResources}
-                  onToggle={() => setExpandedResources(prev => ({
-                    ...prev,
-                    lessonResources: !prev.lessonResources
-                  }))}
-                />
-              )}
-
-              {/* All Course Resources (Mobile) */}
               {allResources.length > 0 && (
                 <MobileResourcesSection
                   title="All Course Resources"
@@ -613,53 +903,8 @@ export default function CoursePage() {
               )}
             </div>
 
-            {/* Desktop: Regular Resources Sections */}
+            {/* Desktop Resources Sections */}
             <div className="hidden lg:block space-y-6">
-              {/* Active Lesson Resources (Desktop) */}
-              {activeLesson && activeLessonResources.length > 0 && (
-                <div className="bg-white rounded-xl shadow border p-6">
-                  <div className="flex items-center justify-between mb-6">
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900">Lesson Resources</h3>
-                      <p className="text-sm text-gray-500">
-                        Downloadable materials for {activeLesson.title}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setResourceViewMode("list")}
-                        className={`p-2 rounded ${resourceViewMode === "list" ? "bg-blue-100 text-blue-600" : "hover:bg-gray-100"}`}
-                      >
-                        <List size={16} />
-                      </button>
-                      <button
-                        onClick={() => setResourceViewMode("grid")}
-                        className={`p-2 rounded ${resourceViewMode === "grid" ? "bg-blue-100 text-blue-600" : "hover:bg-gray-100"}`}
-                      >
-                        <Grid size={16} />
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div className={resourceViewMode === "grid" 
-                    ? "grid grid-cols-1 md:grid-cols-2 gap-4" 
-                    : "space-y-4"
-                  }>
-                    {activeLessonResources.map((resource, index) => (
-                      <ResourceCard
-                        key={index}
-                        resource={resource}
-                        lessonTitle={activeLesson.title}
-                        onDownload={handleDownloadResource}
-                        onPreview={handlePreviewResource}
-                        downloading={downloading}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* All Course Resources (Desktop) */}
               {allResources.length > 0 && (
                 <div className="bg-white rounded-xl shadow border p-6">
                   <div className="flex items-center justify-between mb-6">
@@ -732,6 +977,46 @@ export default function CoursePage() {
                 </div>
               )}
             </div>
+            
+            {/* Quiz Section */}
+            {course.hasQuiz && enrollment?.progress >= 70 && (
+              <div className="bg-white rounded-xl shadow border p-4 md:p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">Course Quiz</h3>
+                    <p className="text-sm text-gray-500">
+                      Available after completing at least 70% of the course
+                    </p>
+                  </div>
+                  {enrollment?.quizCompleted ? (
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="text-lg font-semibold text-gray-900">
+                          Score: {enrollment.quizScore}%
+                        </div>
+                        <div className="text-sm text-gray-500">
+                          {enrollment.quizScore >= 70 ? "Passed" : "Failed"}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => navigate(`/course/${courseId}/quiz`)}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                      >
+                        Retake Quiz
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => navigate(`/course/${courseId}/quiz`)}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+                    >
+                      <FileText size={20} />
+                      Take Quiz
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Course Description */}
             <div className="bg-white rounded-xl shadow border p-4 md:p-6">
@@ -749,10 +1034,19 @@ export default function CoursePage() {
                   <div className="text-xs md:text-sm text-gray-600">Lessons</div>
                   <div className="font-semibold text-sm md:text-base">{lessons.length}</div>
                 </div>
+               
+                  {/* Student count section - UPDATED */}
                 <div className="text-center p-3 bg-purple-50 rounded-lg">
                   <Users className="h-5 w-5 md:h-6 md:w-6 text-purple-600 mx-auto mb-2" />
                   <div className="text-xs md:text-sm text-gray-600">Students</div>
-                  <div className="font-semibold text-sm md:text-base">{course.enrolledCount || 0}</div>
+                  <div className="font-semibold text-sm md:text-base">
+                    {course?.enrolledCount || 0}
+                  </div>
+                  {course?.enrolledCount > 0 && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      {course.enrolledCount === 1 ? '1 student enrolled' : `${course.enrolledCount} students enrolled`}
+                    </div>
+                  )}
                 </div>
                 <div className="text-center p-3 bg-orange-50 rounded-lg">
                   <Award className="h-5 w-5 md:h-6 md:w-6 text-orange-600 mx-auto mb-2" />
@@ -776,6 +1070,7 @@ export default function CoursePage() {
                 <button
                   onClick={() => setShowMobileLessons(false)}
                   className="p-2 hover:bg-gray-100 rounded-lg"
+                  disabled={isAutoCompleting}
                 >
                   <X size={20} />
                 </button>
@@ -791,66 +1086,7 @@ export default function CoursePage() {
               </div>
               
               <div className="max-h-[400px] md:max-h-[600px] overflow-y-auto">
-                {lessons.map((lesson, index) => {
-                  const isCompleted = enrollment?.completedLessons?.includes(lesson.id);
-                  const isActive = activeLesson?.id === lesson.id;
-                  const lessonResources = [
-                    ...(lesson.slides || []),
-                    ...(lesson.documents || []),
-                    ...(lesson.templates || []),
-                    ...(lesson.resources || [])
-                  ].filter(r => r);
-                  
-                  return (
-                    <div
-                      key={`lesson-${lesson.id}`}
-                      className={`p-4 border-b border-gray-100 cursor-pointer transition-colors ${
-                        isActive ? "bg-blue-50" : "hover:bg-gray-50"
-                      }`}
-                      onClick={() => {
-                        setActiveLesson(lesson);
-                        if (window.innerWidth < 1024) {
-                          setShowMobileLessons(false);
-                        }
-                      }}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className={`flex-shrink-0 h-8 w-8 rounded-full flex items-center justify-center ${
-                          isCompleted ? "bg-green-100" : "bg-gray-100"
-                        }`}>
-                          {isCompleted ? (
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                          ) : (
-                            <span className="text-sm font-medium text-gray-600">{index + 1}</span>
-                          )}
-                        </div>
-                        
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <h4 className={`font-medium text-sm md:text-base ${
-                              isCompleted ? "text-green-700" : "text-gray-900"
-                            }`}>
-                              {lesson.title}
-                            </h4>
-                            <span className="text-xs text-gray-500 whitespace-nowrap">{lesson.duration}</span>
-                          </div>
-                          <p className="text-sm text-gray-600 mt-1 line-clamp-2">
-                            {lesson.description}
-                          </p>
-                          
-                          {lessonResources.length > 0 && (
-                            <div className="mt-2 flex items-center gap-1">
-                              <Folder className="h-3 w-3 text-gray-400" />
-                              <span className="text-xs text-gray-500">
-                                {lessonResources.length} resource{lessonResources.length !== 1 ? 's' : ''}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {renderLessonList()}
               </div>
             </div>
 

@@ -2,9 +2,41 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/bizika.png" />
+    <link rel="icon" type="image/svg+xml" href="/logo4.png" />
+    <style>
+      /* Simple pulsing animation for page load */
+      @keyframes gentlePop {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.8; }
+      }
+      
+      /* Apply to page for 3 seconds after load */
+      body.loading-logo::before {
+        content: '';
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        width: 100px;
+        height: 100px;
+        background: url('/logo4.png') no-repeat center/contain;
+        transform: translate(-50%, -50%);
+        animation: gentlePop 1s ease-in-out 3;
+        z-index: 9999;
+      }
+    </style>
+    
+    <script>
+      // Add loading class to body on page load
+      document.addEventListener('DOMContentLoaded', () => {
+        document.body.classList.add('loading-logo');
+        setTimeout(() => {
+          document.body.classList.remove('loading-logo');
+        }, 3000);
+      });
+    </script>
+    
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>bizika</title>
+    <title>Pavoc LMS</title>
   </head>
   <body>
     <div id="root"></div>

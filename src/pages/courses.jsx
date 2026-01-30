@@ -1,8 +1,6 @@
 // src/components/admin/CourseManager.jsx
 import { useState, useEffect, useRef } from "react";
 import { db, storage } from "../firebase/config";
-import { getFunctions, httpsCallable } from "firebase/functions";
-
 import {
   collection,
   addDoc,
@@ -34,15 +32,14 @@ import {
   FileSpreadsheet,
   Presentation,
   Folder,
-  Link,
   Grid,
   List,
   Cloud,
   ExternalLink
 } from "lucide-react";
 
-// Import R2 Service
-import R2Service from "./r2service";
+// Import the correct R2Service
+import R2Service from "../services/r2service";
 
 // File type mapping
 const FILE_TYPES = {
@@ -97,9 +94,6 @@ export default function CourseManager() {
   const [mobileView, setMobileView] = useState(false);
   const [activeDownloading, setActiveDownloading] = useState(null);
   const fileInputRef = useRef(null);
-  
-  // Firebase Functions
-  const functions = getFunctions();
 
   // Detect mobile view
   useEffect(() => {
@@ -145,7 +139,7 @@ export default function CourseManager() {
   const [editImagePreview, setEditImagePreview] = useState(null);
   
   // New resource state
-  const [newResource, setNewResource] = useState({
+ const [newResource, setNewResource] = useState({
     name: "",
     file: null,
     type: "document",
@@ -216,6 +210,7 @@ export default function CourseManager() {
     }
   };
 
+  // Add resource to lesson with R2 upload
   // Add resource to lesson with R2 upload
   const handleAddResource = async () => {
     if (!newResource.name || !newResource.file) {
@@ -304,19 +299,13 @@ export default function CourseManager() {
     return lessonForm.slides.length + lessonForm.documents.length + lessonForm.templates.length;
   };
 
-  // Download resource from R2
+  // Download resource from R2 using the new service
   const downloadResource = async (resource) => {
     try {
       setActiveDownloading(resource.key);
       
-      // Get fresh signed URL from Cloud Function
-      const generateUrlFunction = httpsCallable(functions, 'generateResourceUrl');
-      const result = await generateUrlFunction({ 
-        fileKey: resource.key || resource.fileName,
-        expiresIn: 3600 
-      });
-      
-      const url = result.data.url;
+      // Get signed URL from the new R2Service
+      const url = await R2Service.getSignedUrl(resource.key, 3600);
       
       // Trigger download
       const link = document.createElement('a');
@@ -337,19 +326,13 @@ export default function CourseManager() {
     }
   };
 
-  // Preview resource (open in new tab)
+  // Preview resource (open in new tab) using the new service
   const previewResource = async (resource) => {
     try {
       setActiveDownloading(resource.key);
       
-      // Get fresh signed URL from Cloud Function
-      const generateUrlFunction = httpsCallable(functions, 'generateResourceUrl');
-      const result = await generateUrlFunction({ 
-        fileKey: resource.key || resource.fileName,
-        expiresIn: 3600 
-      });
-      
-      const url = result.data.url;
+      // Get signed URL from the new R2Service
+      const url = await R2Service.getSignedUrl(resource.key, 3600);
       
       // Open in new tab
       window.open(url, '_blank');
@@ -703,9 +686,9 @@ export default function CourseManager() {
       // Optionally clean up R2 resources first
       if (window.confirm("Also delete all associated files from Cloudflare R2 storage?")) {
         try {
-          const cleanupFunction = httpsCallable(functions, 'cleanupCourseResources');
-          await cleanupFunction({ courseId });
-          console.log("✅ R2 resources cleaned up");
+          // Note: You'll need to create a cleanup function in your R2Service
+          // For now, this will just delete the course from Firestore
+          console.log("R2 cleanup would happen here");
         } catch (cleanupError) {
           console.error("Error cleaning up R2 resources:", cleanupError);
           // Continue with course deletion even if cleanup fails

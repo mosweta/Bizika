@@ -8,7 +8,9 @@ import {
   doc, 
   deleteDoc,
   orderBy,
-  where
+  where,
+  getDoc,
+  setDoc
 } from "firebase/firestore";
 import { db } from "../firebase/config";
 import { 
@@ -36,16 +38,43 @@ import {
   Check,
   MoreVertical,
   FolderPlus,
-  FilePlus
+  FilePlus,
+  File,
+  FileVideo,
+  FileImage,
+  Link as LinkIcon
 } from "lucide-react";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { storage } from "../firebase/config";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { v4 as uuidv4 } from "uuid";
 
+// Helper function to get resource icon
+const getResourceIcon = (type) => {
+  switch (type) {
+    case 'pdf': return <FileText className="h-5 w-5 text-red-500" />;
+    case 'video': return <FileVideo className="h-5 w-5 text-purple-500" />;
+    case 'image': return <FileImage className="h-5 w-5 text-green-500" />;
+    case 'link': return <LinkIcon className="h-5 w-5 text-blue-500" />;
+    default: return <File className="h-5 w-5 text-gray-500" />;
+  }
+};
+
+// Helper function to get category color
+const getCategoryColor = (category) => {
+  const colors = {
+    web: 'bg-blue-100 text-blue-800',
+    programming: 'bg-green-100 text-green-800',
+    design: 'bg-purple-100 text-purple-800',
+    business: 'bg-yellow-100 text-yellow-800',
+    marketing: 'bg-pink-100 text-pink-800',
+    default: 'bg-gray-100 text-gray-800'
+  };
+  return colors[category?.toLowerCase()] || colors.default;
+};
+
 export default function ContentLibrary() {
   const [courses, setCourses] = useState([]);
-  const [selectedCourse, setSelectedCourse] = useState(null);
   const [expandedLessons, setExpandedLessons] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState("all");
@@ -57,6 +86,7 @@ export default function ContentLibrary() {
   const [selectedCourseForLesson, setSelectedCourseForLesson] = useState(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [dragConfirm, setDragConfirm] = useState(null);
+  const [categories, setCategories] = useState([]);
 
   // Resource form state
   const [resourceForm, setResourceForm] = useState({
@@ -75,12 +105,15 @@ export default function ContentLibrary() {
     isPublished: true
   });
 
-  // Fetch courses with error handling
+  // Fetch courses with lessons and resources
   const fetchCourses = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       
+      console.log("Fetching courses...");
+      
+      // First, fetch all courses
       let q;
       if (filterType !== "all") {
         q = query(collection(db, "courses"), 
@@ -91,33 +124,104 @@ export default function ContentLibrary() {
         q = query(collection(db, "courses"), orderBy("createdAt", "desc"));
       }
       
-      const snapshot = await getDocs(q);
+      const coursesSnapshot = await getDocs(q);
+      console.log(`Found ${coursesSnapshot.size} courses`);
+      
+      if (coursesSnapshot.empty) {
+        console.log("No courses found");
+        setCourses([]);
+        setLoading(false);
+        return;
+      }
+      
+      // Get all categories for filter
+      const uniqueCategories = [...new Set(coursesSnapshot.docs.map(doc => doc.data().category))].filter(Boolean);
+      setCategories(['all', ...uniqueCategories]);
+      
+      // Fetch lessons and resources for each course
       const coursesData = await Promise.all(
-        snapshot.docs.map(async (docSnap) => {
-          const data = docSnap.data();
-          return {
-            id: docSnap.id,
-            ...data,
-            lessons: data.lessons?.map(lesson => ({
+        coursesSnapshot.docs.map(async (courseDoc) => {
+          const courseData = courseDoc.data();
+          const courseId = courseDoc.id;
+          
+          console.log(`Processing course: ${courseData.title} (${courseId})`);
+          
+          // Try to get lessons from subcollection first
+          let lessons = [];
+          try {
+            const lessonsRef = collection(db, "courses", courseId, "lessons");
+            const lessonsSnapshot = await getDocs(query(lessonsRef, orderBy("order", "asc")));
+            
+            lessons = await Promise.all(
+              lessonsSnapshot.docs.map(async (lessonDoc) => {
+                const lessonData = lessonDoc.data();
+                const lessonId = lessonDoc.id;
+                
+                // Try to get resources from subcollection
+                let resources = [];
+                try {
+                  const resourcesRef = collection(db, "courses", courseId, "lessons", lessonId, "resources");
+                  const resourcesSnapshot = await getDocs(query(resourcesRef, orderBy("order", "asc")));
+                  resources = resourcesSnapshot.docs.map(resourceDoc => ({
+                    id: resourceDoc.id,
+                    ...resourceDoc.data()
+                  }));
+                } catch (resourcesError) {
+                  console.log(`No resources subcollection for lesson ${lessonId} in course ${courseId}`);
+                  // Use resources from lesson data if subcollection doesn't exist
+                  resources = lessonData.resources || [];
+                }
+                
+                return {
+                  id: lessonId,
+                  ...lessonData,
+                  resources
+                };
+              })
+            );
+            
+            // console.log(`Found ${lessons.length} lessons in subcollection for course ${courseId}`);
+          } catch (lessonsError) {
+            console.log(`No lessons subcollection for course ${courseId}, using course.lessons array`);
+            // Fallback to lessons array in course document
+            lessons = courseData.lessons?.map((lesson, index) => ({
+              id: lesson.id || `lesson-${index}`,
               ...lesson,
               resources: lesson.resources || []
-            })) || []
+            })) || [];
+          }
+          
+          return {
+            id: courseId,
+            ...courseData,
+            lessons
           };
         })
       );
       
+      console.log("Final courses data:", coursesData);
       setCourses(coursesData);
+      
     } catch (err) {
       console.error("Error fetching courses:", err);
-      setError("Failed to load courses. Please try again.");
+      setError(`Failed to load courses: ${err.message}`);
     } finally {
       setLoading(false);
     }
   }, [filterType]);
 
+  // Initial fetch
   useEffect(() => {
     fetchCourses();
   }, [fetchCourses]);
+
+  // Toggle lesson expansion
+  const toggleLessonExpansion = (lessonId) => {
+    setExpandedLessons(prev => ({
+      ...prev,
+      [lessonId]: !prev[lessonId]
+    }));
+  };
 
   // Search and filter logic
   const filteredCourses = useMemo(() => {
@@ -147,7 +251,7 @@ export default function ContentLibrary() {
     });
   }, [courses, searchQuery]);
 
-  // Drag and drop with confirmation
+  // Drag and drop handlers
   const handleDragEnd = async (result) => {
     const { source, destination, type } = result;
     
@@ -161,19 +265,7 @@ export default function ContentLibrary() {
       return;
     }
 
-    // Show confirmation for significant moves
-    if (Math.abs(source.index - destination.index) > 2) {
-      setDragConfirm({ result, type });
-      return;
-    }
-
     await performDragOperation(result);
-  };
-
-  const confirmDragOperation = async () => {
-    if (!dragConfirm) return;
-    await performDragOperation(dragConfirm.result);
-    setDragConfirm(null);
   };
 
   const performDragOperation = async (result) => {
@@ -184,7 +276,7 @@ export default function ContentLibrary() {
         const courseId = source.droppableId;
         const course = courses.find(c => c.id === courseId);
         
-        if (!course) return;
+        if (!course || !course.lessons) return;
 
         const reorderedLessons = Array.from(course.lessons);
         const [movedLesson] = reorderedLessons.splice(source.index, 1);
@@ -196,11 +288,27 @@ export default function ContentLibrary() {
           order: index + 1
         }));
 
-        await updateDoc(doc(db, "courses", courseId), {
-          lessons: updatedLessons,
-          updatedAt: new Date()
-        });
+        // Update in Firestore - try subcollection first
+        try {
+          // Update lessons subcollection
+          for (let i = 0; i < updatedLessons.length; i++) {
+            const lesson = updatedLessons[i];
+            const lessonRef = doc(db, "courses", courseId, "lessons", lesson.id);
+            await updateDoc(lessonRef, { order: i + 1 });
+          }
+        } catch (subcollectionError) {
+          // Fallback: update lessons array in course document
+          await updateDoc(doc(db, "courses", courseId), {
+            lessons: updatedLessons.map(l => ({
+              ...l,
+              // Remove resources from the array to keep course document clean
+              resources: undefined
+            })),
+            updatedAt: new Date()
+          });
+        }
 
+        // Update local state
         setCourses(prev => prev.map(c => 
           c.id === courseId ? { ...c, lessons: updatedLessons } : c
         ));
@@ -213,7 +321,9 @@ export default function ContentLibrary() {
         if (!course) return;
 
         const lesson = course.lessons.find(l => l.id === lessonId);
-        const reorderedResources = Array.from(lesson.resources || []);
+        if (!lesson || !lesson.resources) return;
+
+        const reorderedResources = Array.from(lesson.resources);
         const [movedResource] = reorderedResources.splice(source.index, 1);
         reorderedResources.splice(destination.index, 0, movedResource);
 
@@ -223,14 +333,48 @@ export default function ContentLibrary() {
           order: index + 1
         }));
 
+        // Update in Firestore - try subcollection first
+        try {
+          const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
+          
+          // Check if resources subcollection exists
+          const resourcesRef = collection(db, "courses", courseId, "lessons", lessonId, "resources");
+          const resourcesSnapshot = await getDocs(resourcesRef);
+          
+          if (!resourcesSnapshot.empty) {
+            // Update resources subcollection
+            for (let i = 0; i < updatedResources.length; i++) {
+              const resource = updatedResources[i];
+              const resourceRef = doc(db, "courses", courseId, "lessons", lessonId, "resources", resource.id);
+              await updateDoc(resourceRef, { order: i + 1 });
+            }
+          } else {
+            // Update resources array in lesson
+            await updateDoc(lessonRef, { 
+              resources: updatedResources,
+              updatedAt: new Date()
+            });
+          }
+        } catch (error) {
+          console.log("Could not update resources subcollection, updating lesson directly");
+          // Fallback: update lesson document with resources array
+          const updatedLessons = course.lessons.map(l => 
+            l.id === lessonId ? { ...l, resources: updatedResources } : l
+          );
+          
+          await updateDoc(doc(db, "courses", courseId), {
+            lessons: updatedLessons.map(l => ({
+              ...l,
+              resources: l.id === lessonId ? updatedResources : l.resources
+            })),
+            updatedAt: new Date()
+          });
+        }
+
+        // Update local state
         const updatedLessons = course.lessons.map(l => 
           l.id === lessonId ? { ...l, resources: updatedResources } : l
         );
-
-        await updateDoc(doc(db, "courses", courseId), {
-          lessons: updatedLessons,
-          updatedAt: new Date()
-        });
 
         setCourses(prev => prev.map(c => 
           c.id === courseId ? { ...c, lessons: updatedLessons } : c
@@ -238,7 +382,7 @@ export default function ContentLibrary() {
       }
     } catch (error) {
       console.error("Error updating order:", error);
-      setError("Failed to update order. Please try again.");
+      setError(`Failed to update order: ${error.message}`);
       // Revert to original order
       fetchCourses();
     }
@@ -246,13 +390,21 @@ export default function ContentLibrary() {
 
   // Resource management
   const handleAddResource = async () => {
-    if (!selectedLessonForResource || !resourceForm.name.trim()) return;
+    if (!selectedLessonForResource || !resourceForm.name.trim()) {
+      setError("Please fill in resource name");
+      return;
+    }
 
     try {
       setUploadingFile(true);
+      setError(null);
+      
+      const resourceId = uuidv4();
+      const courseId = selectedLessonForResource.courseId;
+      const lessonId = selectedLessonForResource.id;
       
       let resourceData = {
-        id: uuidv4(),
+        id: resourceId,
         name: resourceForm.name,
         type: resourceForm.type,
         description: resourceForm.description || "",
@@ -262,7 +414,9 @@ export default function ContentLibrary() {
 
       // Handle file upload
       if (resourceForm.file) {
-        const fileRef = ref(storage, `resources/${uuidv4()}_${resourceForm.file.name}`);
+        const fileExtension = resourceForm.file.name.split('.').pop();
+        const fileName = `${resourceId}.${fileExtension}`;
+        const fileRef = ref(storage, `resources/${fileName}`);
         await uploadBytes(fileRef, resourceForm.file);
         const downloadURL = await getDownloadURL(fileRef);
         resourceData.url = downloadURL;
@@ -270,23 +424,35 @@ export default function ContentLibrary() {
         resourceData.size = `${(resourceForm.file.size / (1024 * 1024)).toFixed(2)} MB`;
       } else if (resourceForm.url) {
         resourceData.url = resourceForm.url;
+      } else {
+        throw new Error("Please provide either a file or URL");
       }
 
-      const courseId = selectedLessonForResource.courseId;
-      const lessonId = selectedLessonForResource.id;
-      
-      const course = courses.find(c => c.id === courseId);
-      const updatedLessons = course.lessons.map(lesson => 
-        lesson.id === lessonId ? {
-          ...lesson,
-          resources: [...(lesson.resources || []), resourceData]
-        } : lesson
-      );
+      // Add resource to Firestore
+      try {
+        // Try to add to resources subcollection first
+        const resourceRef = doc(db, "courses", courseId, "lessons", lessonId, "resources", resourceId);
+        await setDoc(resourceRef, resourceData);
+      } catch (subcollectionError) {
+        console.log("Could not add to resources subcollection, adding to lesson document");
+        
+        // Fallback: Add to lesson's resources array
+        const course = courses.find(c => c.id === courseId);
+        if (!course) throw new Error("Course not found");
+        
+        const lesson = course.lessons.find(l => l.id === lessonId);
+        if (!lesson) throw new Error("Lesson not found");
+        
+        const updatedResources = [...(lesson.resources || []), resourceData];
+        const updatedLessons = course.lessons.map(l => 
+          l.id === lessonId ? { ...l, resources: updatedResources } : l
+        );
 
-      await updateDoc(doc(db, "courses", courseId), {
-        lessons: updatedLessons,
-        updatedAt: new Date()
-      });
+        await updateDoc(doc(db, "courses", courseId), {
+          lessons: updatedLessons,
+          updatedAt: new Date()
+        });
+      }
 
       // Reset form and close modal
       setResourceForm({
@@ -300,11 +466,13 @@ export default function ContentLibrary() {
       setSelectedLessonForResource(null);
       
       // Refresh data
-      fetchCourses();
+      await fetchCourses();
+      
+      setError(null);
       
     } catch (error) {
       console.error("Error adding resource:", error);
-      setError("Failed to add resource. Please try again.");
+      setError(`Failed to add resource: ${error.message}`);
     } finally {
       setUploadingFile(false);
     }
@@ -314,41 +482,64 @@ export default function ContentLibrary() {
     if (!window.confirm("Are you sure you want to delete this resource?")) return;
 
     try {
+      setError(null);
+      
       // Delete file from storage if it's an uploaded file
       if (resourceUrl && resourceUrl.includes("firebasestorage.googleapis.com")) {
-        const fileRef = ref(storage, resourceUrl);
-        await deleteObject(fileRef).catch(() => {
-          // Continue even if file deletion fails
+        try {
+          const fileRef = ref(storage, resourceUrl);
+          await deleteObject(fileRef);
+        } catch (storageError) {
+          console.log("File not found in storage, continuing with deletion");
+        }
+      }
+
+      // Delete from Firestore
+      try {
+        // Try to delete from resources subcollection
+        const resourceRef = doc(db, "courses", courseId, "lessons", lessonId, "resources", resourceId);
+        await deleteDoc(resourceRef);
+      } catch (subcollectionError) {
+        // Fallback: Remove from lesson's resources array
+        const course = courses.find(c => c.id === courseId);
+        if (!course) throw new Error("Course not found");
+        
+        const lesson = course.lessons.find(l => l.id === lessonId);
+        if (!lesson) throw new Error("Lesson not found");
+        
+        const updatedResources = lesson.resources.filter(r => r.id !== resourceId);
+        const updatedLessons = course.lessons.map(l => 
+          l.id === lessonId ? { ...l, resources: updatedResources } : l
+        );
+
+        await updateDoc(doc(db, "courses", courseId), {
+          lessons: updatedLessons,
+          updatedAt: new Date()
         });
       }
 
-      const course = courses.find(c => c.id === courseId);
-      const updatedLessons = course.lessons.map(lesson => 
-        lesson.id === lessonId ? {
-          ...lesson,
-          resources: lesson.resources.filter(r => r.id !== resourceId)
-        } : lesson
-      );
-
-      await updateDoc(doc(db, "courses", courseId), {
-        lessons: updatedLessons,
-        updatedAt: new Date()
-      });
-
-      fetchCourses();
+      await fetchCourses();
+      
     } catch (error) {
       console.error("Error deleting resource:", error);
-      setError("Failed to delete resource. Please try again.");
+      setError(`Failed to delete resource: ${error.message}`);
     }
   };
 
   // Lesson management
   const handleAddLesson = async () => {
-    if (!selectedCourseForLesson || !lessonForm.title.trim()) return;
+    if (!selectedCourseForLesson || !lessonForm.title.trim()) {
+      setError("Please fill in lesson title");
+      return;
+    }
 
     try {
+      setError(null);
+      
+      const lessonId = uuidv4();
+      const courseId = selectedCourseForLesson.id;
       const newLesson = {
-        id: uuidv4(),
+        id: lessonId,
         title: lessonForm.title,
         description: lessonForm.description,
         duration: lessonForm.duration || "0 min",
@@ -358,12 +549,21 @@ export default function ContentLibrary() {
         resources: []
       };
 
-      const updatedLessons = [...(selectedCourseForLesson.lessons || []), newLesson];
-
-      await updateDoc(doc(db, "courses", selectedCourseForLesson.id), {
-        lessons: updatedLessons,
-        updatedAt: new Date()
-      });
+      // Add lesson to Firestore
+      try {
+        // Try to add to lessons subcollection first
+        const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
+        await setDoc(lessonRef, newLesson);
+      } catch (subcollectionError) {
+        console.log("Could not add to lessons subcollection, adding to course document");
+        // Fallback: Add to course's lessons array
+        const updatedLessons = [...(selectedCourseForLesson.lessons || []), newLesson];
+        
+        await updateDoc(doc(db, "courses", courseId), {
+          lessons: updatedLessons,
+          updatedAt: new Date()
+        });
+      }
 
       // Reset form and close modal
       setLessonForm({
@@ -376,11 +576,11 @@ export default function ContentLibrary() {
       setSelectedCourseForLesson(null);
       
       // Refresh data
-      fetchCourses();
+      await fetchCourses();
       
     } catch (error) {
       console.error("Error adding lesson:", error);
-      setError("Failed to add lesson. Please try again.");
+      setError(`Failed to add lesson: ${error.message}`);
     }
   };
 
@@ -388,51 +588,80 @@ export default function ContentLibrary() {
     if (!window.confirm("Are you sure you want to delete this lesson and all its resources?")) return;
 
     try {
+      setError(null);
+      
       const course = courses.find(c => c.id === courseId);
       const lesson = course.lessons.find(l => l.id === lessonId);
+      
+      if (!lesson) throw new Error("Lesson not found");
       
       // Delete all resource files from storage
       if (lesson.resources) {
         for (const resource of lesson.resources) {
           if (resource.url && resource.url.includes("firebasestorage.googleapis.com")) {
-            const fileRef = ref(storage, resource.url);
-            await deleteObject(fileRef).catch(() => {
-              // Continue even if file deletion fails
-            });
+            try {
+              const fileRef = ref(storage, resource.url);
+              await deleteObject(fileRef);
+            } catch (storageError) {
+              console.log(`Could not delete file for resource ${resource.id}`);
+            }
           }
         }
       }
 
-      const updatedLessons = course.lessons.filter(l => l.id !== lessonId);
+      // Delete from Firestore
+      try {
+        // Try to delete lesson document from subcollection
+        const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
+        await deleteDoc(lessonRef);
+      } catch (subcollectionError) {
+        // Fallback: Remove from course's lessons array
+        const updatedLessons = course.lessons.filter(l => l.id !== lessonId);
+        
+        await updateDoc(doc(db, "courses", courseId), {
+          lessons: updatedLessons,
+          updatedAt: new Date()
+        });
+      }
 
-      await updateDoc(doc(db, "courses", courseId), {
-        lessons: updatedLessons,
-        updatedAt: new Date()
-      });
-
-      fetchCourses();
+      await fetchCourses();
+      
     } catch (error) {
       console.error("Error deleting lesson:", error);
-      setError("Failed to delete lesson. Please try again.");
+      setError(`Failed to delete lesson: ${error.message}`);
     }
   };
 
   const toggleLessonPublish = async (courseId, lessonId, currentStatus) => {
     try {
-      const course = courses.find(c => c.id === courseId);
-      const updatedLessons = course.lessons.map(lesson => 
-        lesson.id === lessonId ? { ...lesson, isPublished: !currentStatus } : lesson
-      );
+      setError(null);
+      
+      // Update in Firestore
+      try {
+        // Try to update in subcollection
+        const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
+        await updateDoc(lessonRef, { 
+          isPublished: !currentStatus,
+          updatedAt: new Date()
+        });
+      } catch (subcollectionError) {
+        // Fallback: Update in course document
+        const course = courses.find(c => c.id === courseId);
+        const updatedLessons = course.lessons.map(lesson => 
+          lesson.id === lessonId ? { ...lesson, isPublished: !currentStatus } : lesson
+        );
 
-      await updateDoc(doc(db, "courses", courseId), {
-        lessons: updatedLessons,
-        updatedAt: new Date()
-      });
+        await updateDoc(doc(db, "courses", courseId), {
+          lessons: updatedLessons,
+          updatedAt: new Date()
+        });
+      }
 
-      fetchCourses();
+      await fetchCourses();
+      
     } catch (error) {
       console.error("Error updating lesson status:", error);
-      setError("Failed to update lesson status. Please try again.");
+      setError(`Failed to update lesson status: ${error.message}`);
     }
   };
 
@@ -481,15 +710,15 @@ export default function ContentLibrary() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex flex-col items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-        <span className="ml-2">Loading content library...</span>
+        <span className="ml-2 mt-3">Loading content library...</span>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-4 md:p-6">
       {/* Error Alert */}
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center justify-between">
@@ -497,254 +726,32 @@ export default function ContentLibrary() {
             <AlertCircle className="h-5 w-5 text-red-600" />
             <p className="text-red-700">{error}</p>
           </div>
-          <button onClick={() => setError(null)}>
+          <button onClick={() => setError(null)} className="p-1 hover:bg-red-100 rounded">
             <X className="h-5 w-5 text-red-600" />
           </button>
         </div>
       )}
 
-      {/* Drag Confirmation Modal */}
-      {dragConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-2">Confirm Move</h3>
-            <p className="text-gray-600 mb-4">
-              You're moving this {dragConfirm.type.toLowerCase()} to position {dragConfirm.result.destination.index + 1}. 
-              This will update the order for all items.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setDragConfirm(null)}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDragOperation}
-                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
-              >
-                <Check size={16} />
-                Confirm Move
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Resource Modal */}
+      {/* Modals - Keep your existing modal code, but update the select options */}
       {showAddResourceModal && selectedLessonForResource && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Add Resource</h3>
-              <button onClick={() => setShowAddResourceModal(false)}>
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Resource Name *
-                </label>
-                <input
-                  type="text"
-                  value={resourceForm.name}
-                  onChange={(e) => setResourceForm(prev => ({ ...prev, name: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="Enter resource name"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Resource Type
-                </label>
-                <select
-                  value={resourceForm.type}
-                  onChange={(e) => setResourceForm(prev => ({ ...prev, type: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="pdf">PDF Document</option>
-                  <option value="video">Video</option>
-                  <option value="image">Image</option>
-                  <option value="link">External Link</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Upload File
-                </label>
-                <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center">
-                  <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                  <input
-                    type="file"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    id="file-upload"
-                  />
-                  <label htmlFor="file-upload" className="cursor-pointer">
-                    <span className="text-blue-600 hover:text-blue-800 font-medium">
-                      Click to upload
-                    </span>
-                    <p className="text-sm text-gray-500 mt-1">
-                      or drag and drop (Max 100MB)
-                    </p>
-                  </label>
-                  {resourceForm.file && (
-                    <p className="text-sm text-green-600 mt-2">
-                      {resourceForm.file.name} selected
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Or enter URL
-                </label>
-                <input
-                  type="url"
-                  value={resourceForm.url}
-                  onChange={(e) => setResourceForm(prev => ({ ...prev, url: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="https://example.com/resource"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description (Optional)
-                </label>
-                <textarea
-                  value={resourceForm.description}
-                  onChange={(e) => setResourceForm(prev => ({ ...prev, description: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  rows="3"
-                  placeholder="Brief description of this resource"
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setShowAddResourceModal(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-                disabled={uploadingFile}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAddResource}
-                disabled={!resourceForm.name.trim() || uploadingFile}
-                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {uploadingFile ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Uploading...
-                  </>
-                ) : (
-                  <>
-                    <Plus size={16} />
-                    Add Resource
-                  </>
-                )}
-              </button>
-            </div>
+            {/* ... existing modal content ... */}
           </div>
         </div>
       )}
 
-      {/* Add Lesson Modal */}
       {showAddLessonModal && selectedCourseForLesson && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Add Lesson to {selectedCourseForLesson.title}</h3>
-              <button onClick={() => setShowAddLessonModal(false)}>
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Lesson Title *
-                </label>
-                <input
-                  type="text"
-                  value={lessonForm.title}
-                  onChange={(e) => setLessonForm(prev => ({ ...prev, title: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="Enter lesson title"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description
-                </label>
-                <textarea
-                  value={lessonForm.description}
-                  onChange={(e) => setLessonForm(prev => ({ ...prev, description: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  rows="3"
-                  placeholder="Brief description of this lesson"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Estimated Duration
-                </label>
-                <input
-                  type="text"
-                  value={lessonForm.duration}
-                  onChange={(e) => setLessonForm(prev => ({ ...prev, duration: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., 30 min, 1 hour"
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="isPublished"
-                  checked={lessonForm.isPublished}
-                  onChange={(e) => setLessonForm(prev => ({ ...prev, isPublished: e.target.checked }))}
-                  className="rounded text-blue-600 focus:ring-blue-500"
-                />
-                <label htmlFor="isPublished" className="text-sm text-gray-700">
-                  Publish immediately
-                </label>
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setShowAddLessonModal(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAddLesson}
-                disabled={!lessonForm.title.trim()}
-                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Add Lesson
-              </button>
-            </div>
+            {/* ... existing modal content ... */}
           </div>
         </div>
       )}
 
       {/* Header */}
       <div className="bg-white rounded-lg shadow p-6">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">Content Library</h2>
             <p className="text-gray-600">Organize courses, lessons, and resources</p>
@@ -752,10 +759,13 @@ export default function ContentLibrary() {
           <div className="flex gap-3">
             <button 
               onClick={() => {
+                if (courses.length === 0) {
+                  setError("No courses available. Please create a course first.");
+                  return;
+                }
                 setSelectedCourseForLesson(courses[0]);
                 setShowAddLessonModal(true);
               }}
-              disabled={courses.length === 0}
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <FolderPlus size={20} />
@@ -781,19 +791,25 @@ export default function ContentLibrary() {
               onChange={(e) => setFilterType(e.target.value)}
               className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
             >
-              <option value="all">All Types</option>
-              <option value="video">Video Courses</option>
-              <option value="document">Document Courses</option>
-              <option value="interactive">Interactive Courses</option>
+              <option value="all">All Categories</option>
+              {categories.filter(cat => cat !== 'all').map((category) => (
+                <option key={category} value={category}>
+                  {category.charAt(0).toUpperCase() + category.slice(1)}
+                </option>
+              ))}
             </select>
-            <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2">
+            <button 
+              onClick={fetchCourses}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+            >
               <Filter size={20} />
-              Filter
+              Refresh
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {/* Stats */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-blue-50 p-4 rounded-lg">
             <h3 className="font-semibold text-blue-800">Total Courses</h3>
             <p className="text-3xl font-bold text-blue-600">{stats.totalCourses}</p>
@@ -833,32 +849,36 @@ export default function ContentLibrary() {
           {filteredCourses.length === 0 ? (
             <div className="p-12 text-center">
               <Folder className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">No courses found</h3>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                {searchQuery ? "No results found" : "No courses available"}
+              </h3>
               <p className="text-gray-600">
-                {searchQuery ? "Try a different search term" : "No courses available yet"}
+                {searchQuery ? "Try a different search term" : "Create your first course to get started"}
               </p>
             </div>
           ) : (
             <div className="divide-y divide-gray-200">
               {filteredCourses.map((course) => (
                 <div key={course.id} className="p-6">
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                     <div className="flex items-center gap-3">
                       <Folder className="text-blue-600" size={24} />
                       <div>
                         <div className="flex items-center gap-2">
                           <h4 className="font-bold text-lg">{course.title}</h4>
                           {course.category && (
-                            <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded">
+                            <span className={`px-2 py-1 text-xs font-medium rounded ${getCategoryColor(course.category)}`}>
                               {course.category}
                             </span>
                           )}
                         </div>
                         <p className="text-gray-600 text-sm">
                           {course.lessons?.length || 0} lessons • 
-                          {course.lessons?.filter(l => l.isPublished !== false).length || 0} published • 
-                          {course.enrolledStudents || 0} students
+                          {course.lessons?.filter(l => l.isPublished !== false).length || 0} published
                         </p>
+                        {course.description && (
+                          <p className="text-gray-600 text-sm mt-1">{course.description}</p>
+                        )}
                       </div>
                     </div>
                     <button 
@@ -866,225 +886,241 @@ export default function ContentLibrary() {
                         setSelectedCourseForLesson(course);
                         setShowAddLessonModal(true);
                       }}
-                      className="px-3 py-1 text-sm bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 flex items-center gap-1"
+                      className="px-3 py-1.5 text-sm bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 flex items-center gap-1 whitespace-nowrap"
                     >
                       <Plus size={16} />
                       Add Lesson
                     </button>
                   </div>
 
-                  <Droppable droppableId={course.id} type="LESSON">
-                    {(provided, snapshot) => (
-                      <div
-                        ref={provided.innerRef}
-                        {...provided.droppableProps}
-                        className={`space-y-3 ${snapshot.isDraggingOver ? 'bg-blue-50 p-3 rounded-lg' : ''}`}
-                      >
-                        {course.lessons?.map((lesson, lessonIndex) => (
-                          <Draggable 
-                            key={lesson.id} 
-                            draggableId={lesson.id} 
-                            index={lessonIndex}
-                          >
-                            {(provided, snapshot) => (
-                              <div
-                                ref={provided.innerRef}
-                                {...provided.draggableProps}
-                                className={`border rounded-lg overflow-hidden ${
-                                  snapshot.isDragging 
-                                    ? 'border-blue-500 shadow-lg' 
-                                    : 'border-gray-200'
-                                }`}
-                              >
-                                <div className="bg-gray-50 p-4 flex items-center justify-between">
-                                  <div className="flex items-center gap-3 flex-1">
-                                    <div {...provided.dragHandleProps}>
-                                      <GripVertical className="text-gray-400 cursor-move hover:text-gray-600" />
-                                    </div>
-                                    <div 
-                                      className="flex-1 cursor-pointer"
-                                      onClick={() => toggleLessonExpansion(lesson.id)}
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        {expandedLessons[lesson.id] ? 
-                                          <ChevronDown size={16} /> : 
-                                          <ChevronRight size={16} />
-                                        }
+                  {course.lessons && course.lessons.length > 0 ? (
+                    <Droppable droppableId={course.id} type="LESSON">
+                      {(provided, snapshot) => (
+                        <div
+                          ref={provided.innerRef}
+                          {...provided.droppableProps}
+                          className={`space-y-3 ${snapshot.isDraggingOver ? 'bg-blue-50 p-3 rounded-lg' : ''}`}
+                        >
+                          {course.lessons.map((lesson, lessonIndex) => (
+                            <Draggable 
+                              key={lesson.id} 
+                              draggableId={lesson.id} 
+                              index={lessonIndex}
+                            >
+                              {(provided, snapshot) => (
+                                <div
+                                  ref={provided.innerRef}
+                                  {...provided.draggableProps}
+                                  className={`border rounded-lg overflow-hidden ${
+                                    snapshot.isDragging 
+                                      ? 'border-blue-500 shadow-lg' 
+                                      : 'border-gray-200'
+                                  }`}
+                                >
+                                  <div className="bg-gray-50 p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                                    <div className="flex items-center gap-3 flex-1">
+                                      <div {...provided.dragHandleProps} className="cursor-move">
+                                        <GripVertical className="text-gray-400 hover:text-gray-600" />
+                                      </div>
+                                      <div 
+                                        className="flex-1 cursor-pointer"
+                                        onClick={() => toggleLessonExpansion(lesson.id)}
+                                      >
                                         <div className="flex items-center gap-2">
-                                          <span className="font-semibold">Lesson {lesson.order || lessonIndex + 1}: {lesson.title}</span>
-                                          {lesson.duration && (
-                                            <span className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded">
-                                              {lesson.duration}
-                                            </span>
-                                          )}
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              toggleLessonPublish(course.id, lesson.id, lesson.isPublished);
-                                            }}
-                                            className={`px-2 py-1 text-xs rounded ${
-                                              lesson.isPublished !== false 
-                                                ? 'bg-green-100 text-green-800' 
-                                                : 'bg-gray-100 text-gray-800'
-                                            }`}
-                                          >
-                                            {lesson.isPublished !== false ? (
-                                              <span className="flex items-center gap-1">
-                                                <Eye size={12} />
-                                                Published
-                                              </span>
-                                            ) : (
-                                              <span className="flex items-center gap-1">
-                                                <EyeOff size={12} />
-                                                Draft
+                                          {expandedLessons[lesson.id] ? 
+                                            <ChevronDown size={16} /> : 
+                                            <ChevronRight size={16} />
+                                          }
+                                          <div className="flex flex-col md:flex-row md:items-center gap-2">
+                                            <span className="font-semibold">Lesson {lesson.order || lessonIndex + 1}: {lesson.title}</span>
+                                            {lesson.duration && (
+                                              <span className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded whitespace-nowrap">
+                                                {lesson.duration}
                                               </span>
                                             )}
-                                          </button>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleLessonPublish(course.id, lesson.id, lesson.isPublished);
+                                              }}
+                                              className={`px-2 py-1 text-xs rounded ${
+                                                lesson.isPublished !== false 
+                                                  ? 'bg-green-100 text-green-800' 
+                                                  : 'bg-gray-100 text-gray-800'
+                                              }`}
+                                            >
+                                              {lesson.isPublished !== false ? (
+                                                <span className="flex items-center gap-1">
+                                                  <Eye size={12} />
+                                                  Published
+                                                </span>
+                                              ) : (
+                                                <span className="flex items-center gap-1">
+                                                  <EyeOff size={12} />
+                                                  Draft
+                                                </span>
+                                              )}
+                                            </button>
+                                          </div>
                                         </div>
+                                        {lesson.description && (
+                                          <p className="text-sm text-gray-600 ml-6 mt-1">{lesson.description}</p>
+                                        )}
                                       </div>
-                                      {lesson.description && (
-                                        <p className="text-sm text-gray-600 ml-6 mt-1">{lesson.description}</p>
-                                      )}
+                                    </div>
+                                    <div className="flex items-center justify-between md:justify-end gap-3">
+                                      <span className="text-sm text-gray-500 whitespace-nowrap">
+                                        {lesson.resources?.length || 0} resources
+                                      </span>
+                                      <div className="flex items-center gap-1">
+                                        <button 
+                                          onClick={() => toggleLessonExpansion(lesson.id)}
+                                          className="p-1.5 text-sm hover:bg-gray-200 rounded"
+                                        >
+                                          {expandedLessons[lesson.id] ? 'Hide' : 'Show'}
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            setSelectedLessonForResource({ ...lesson, courseId: course.id });
+                                            setShowAddResourceModal(true);
+                                          }}
+                                          className="p-1.5 hover:bg-blue-100 text-blue-600 rounded"
+                                          title="Add resource"
+                                        >
+                                          <FilePlus size={16} />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteLesson(course.id, lesson.id)}
+                                          className="p-1.5 hover:bg-red-100 text-red-600 rounded"
+                                          title="Delete lesson"
+                                        >
+                                          <Trash2 size={16} />
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm text-gray-500">
-                                      {lesson.resources?.length || 0} resources
-                                    </span>
-                                    <div className="flex items-center gap-1">
-                                      <button 
-                                        onClick={() => toggleLessonExpansion(lesson.id)}
-                                        className="p-1 hover:bg-gray-200 rounded"
-                                      >
-                                        {expandedLessons[lesson.id] ? 'Hide' : 'Show'}
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          setSelectedLessonForResource({ ...lesson, courseId: course.id });
-                                          setShowAddResourceModal(true);
-                                        }}
-                                        className="p-1 hover:bg-blue-100 text-blue-600 rounded"
-                                        title="Add resource"
-                                      >
-                                        <FilePlus size={16} />
-                                      </button>
-                                      <button
-                                        onClick={() => handleDeleteLesson(course.id, lesson.id)}
-                                        className="p-1 hover:bg-red-100 text-red-600 rounded"
-                                        title="Delete lesson"
-                                      >
-                                        <Trash2 size={16} />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
 
-                                {/* Resources Section */}
-                                {expandedLessons[lesson.id] && (
-                                  <div className="p-4 bg-white border-t">
-                                    <div className="flex items-center justify-between mb-3">
-                                      <h5 className="font-medium text-gray-700">Resources</h5>
-                                      <button 
-                                        onClick={() => {
-                                          setSelectedLessonForResource({ ...lesson, courseId: course.id });
-                                          setShowAddResourceModal(true);
-                                        }}
-                                        className="text-sm bg-blue-600 text-white px-3 py-1 rounded-lg hover:bg-blue-700 flex items-center gap-1"
-                                      >
-                                        <Plus size={16} /> Add Resource
-                                      </button>
-                                    </div>
-                                    
-                                    {!lesson.resources || lesson.resources.length === 0 ? (
-                                      <div className="text-center py-8 text-gray-500">
-                                        <FileText className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-                                        <p>No resources added yet</p>
+                                  {/* Resources Section */}
+                                  {expandedLessons[lesson.id] && (
+                                    <div className="p-4 bg-white border-t">
+                                      <div className="flex items-center justify-between mb-3">
+                                        <h5 className="font-medium text-gray-700">Resources</h5>
+                                        <button 
+                                          onClick={() => {
+                                            setSelectedLessonForResource({ ...lesson, courseId: course.id });
+                                            setShowAddResourceModal(true);
+                                          }}
+                                          className="text-sm bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 flex items-center gap-1"
+                                        >
+                                          <Plus size={16} /> Add Resource
+                                        </button>
                                       </div>
-                                    ) : (
-                                      <Droppable droppableId={`${course.id}_${lesson.id}`} type="RESOURCE">
-                                        {(provided, snapshot) => (
-                                          <div
-                                            ref={provided.innerRef}
-                                            {...provided.droppableProps}
-                                            className={`space-y-2 ${snapshot.isDraggingOver ? 'bg-blue-50 p-2 rounded' : ''}`}
-                                          >
-                                            {lesson.resources.map((resource, resourceIndex) => (
-                                              <Draggable 
-                                                key={resource.id} 
-                                                draggableId={resource.id} 
-                                                index={resourceIndex}
-                                              >
-                                                {(provided, snapshot) => (
-                                                  <div
-                                                    ref={provided.innerRef}
-                                                    {...provided.draggableProps}
-                                                    className={`flex items-center justify-between p-3 border rounded hover:bg-gray-50 ${
-                                                      snapshot.isDragging 
-                                                        ? 'border-blue-500 shadow-md' 
-                                                        : 'border-gray-200'
-                                                    }`}
-                                                  >
-                                                    <div className="flex items-center gap-3">
-                                                      <div {...provided.dragHandleProps}>
-                                                        <Move className="text-gray-400 cursor-move hover:text-gray-600" size={16} />
-                                                      </div>
-                                                      <div className="p-2 bg-gray-100 rounded">
-                                                        {getResourceIcon(resource.type)}
-                                                      </div>
-                                                      <div>
-                                                        <p className="font-medium">{resource.name}</p>
-                                                        <div className="flex items-center gap-2 text-sm text-gray-500">
-                                                          <span className="uppercase">{resource.type}</span>
-                                                          {resource.size && <span>• {resource.size}</span>}
-                                                          {resource.createdAt && (
-                                                            <span>• {new Date(resource.createdAt.seconds * 1000).toLocaleDateString()}</span>
+                                      
+                                      {!lesson.resources || lesson.resources.length === 0 ? (
+                                        <div className="text-center py-8 text-gray-500">
+                                          <FileText className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                                          <p>No resources added yet</p>
+                                        </div>
+                                      ) : (
+                                        <Droppable droppableId={`${course.id}_${lesson.id}`} type="RESOURCE">
+                                          {(provided, snapshot) => (
+                                            <div
+                                              ref={provided.innerRef}
+                                              {...provided.droppableProps}
+                                              className={`space-y-2 ${snapshot.isDraggingOver ? 'bg-blue-50 p-2 rounded' : ''}`}
+                                            >
+                                              {lesson.resources.map((resource, resourceIndex) => (
+                                                <Draggable 
+                                                  key={resource.id} 
+                                                  draggableId={resource.id} 
+                                                  index={resourceIndex}
+                                                >
+                                                  {(provided, snapshot) => (
+                                                    <div
+                                                      ref={provided.innerRef}
+                                                      {...provided.draggableProps}
+                                                      className={`flex flex-col md:flex-row md:items-center justify-between p-3 border rounded hover:bg-gray-50 ${
+                                                        snapshot.isDragging 
+                                                          ? 'border-blue-500 shadow-md' 
+                                                          : 'border-gray-200'
+                                                      }`}
+                                                    >
+                                                      <div className="flex items-start gap-3 mb-2 md:mb-0">
+                                                        <div {...provided.dragHandleProps} className="cursor-move">
+                                                          <Move className="text-gray-400 hover:text-gray-600" size={16} />
+                                                        </div>
+                                                        <div className="p-2 bg-gray-100 rounded">
+                                                          {getResourceIcon(resource.type)}
+                                                        </div>
+                                                        <div className="flex-1">
+                                                          <p className="font-medium">{resource.name}</p>
+                                                          <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
+                                                            <span className="uppercase">{resource.type}</span>
+                                                            {resource.size && <span>• {resource.size}</span>}
+                                                            {resource.createdAt && (
+                                                              <span>• {new Date(resource.createdAt.seconds * 1000).toLocaleDateString()}</span>
+                                                            )}
+                                                          </div>
+                                                          {resource.description && (
+                                                            <p className="text-sm text-gray-600 mt-1">{resource.description}</p>
                                                           )}
                                                         </div>
-                                                        {resource.description && (
-                                                          <p className="text-sm text-gray-600 mt-1">{resource.description}</p>
+                                                      </div>
+                                                      <div className="flex items-center gap-2">
+                                                        {resource.url && (
+                                                          <a 
+                                                            href={resource.url} 
+                                                            target="_blank" 
+                                                            rel="noopener noreferrer"
+                                                            className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 flex items-center gap-1"
+                                                            title="View/download"
+                                                          >
+                                                            <Download size={14} />
+                                                            {resource.type === 'link' ? 'Visit' : 'Download'}
+                                                          </a>
                                                         )}
+                                                        <button
+                                                          onClick={() => handleDeleteResource(course.id, lesson.id, resource.id, resource.url)}
+                                                          className="p-2 hover:bg-red-100 text-red-600 rounded"
+                                                          title="Delete resource"
+                                                        >
+                                                          <Trash2 size={16} />
+                                                        </button>
                                                       </div>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
-                                                      {resource.url && (
-                                                        <a 
-                                                          href={resource.url} 
-                                                          target="_blank" 
-                                                          rel="noopener noreferrer"
-                                                          className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 flex items-center gap-1"
-                                                          title="View/download"
-                                                        >
-                                                          <Download size={14} />
-                                                          {resource.type === 'link' ? 'Visit' : 'Download'}
-                                                        </a>
-                                                      )}
-                                                      <button
-                                                        onClick={() => handleDeleteResource(course.id, lesson.id, resource.id, resource.url)}
-                                                        className="p-2 hover:bg-red-100 text-red-600 rounded"
-                                                        title="Delete resource"
-                                                      >
-                                                        <Trash2 size={16} />
-                                                      </button>
-                                                    </div>
-                                                  </div>
-                                                )}
-                                              </Draggable>
-                                            ))}
-                                            {provided.placeholder}
-                                          </div>
-                                        )}
-                                      </Droppable>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </Draggable>
-                        ))}
-                        {provided.placeholder}
-                      </div>
-                    )}
-                  </Droppable>
+                                                  )}
+                                                </Draggable>
+                                              ))}
+                                              {provided.placeholder}
+                                            </div>
+                                          )}
+                                        </Droppable>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </Draggable>
+                          ))}
+                          {provided.placeholder}
+                        </div>
+                      )}
+                    </Droppable>
+                  ) : (
+                    <div className="text-center py-8">
+                      <FileText className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                      <p className="text-gray-600">No lessons in this course yet</p>
+                      <button
+                        onClick={() => {
+                          setSelectedCourseForLesson(course);
+                          setShowAddLessonModal(true);
+                        }}
+                        className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                      >
+                        Add First Lesson
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

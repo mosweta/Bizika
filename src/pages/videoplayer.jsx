@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import YouTube from 'react-youtube';
 import {
   Play,
@@ -13,7 +13,6 @@ import {
   VolumeX,
   ChevronRight,
   ChevronLeft,
-  Captions,
   X,
   Check,
   AlertCircle
@@ -27,13 +26,30 @@ const EdpuzzleVideoPlayer = ({
   hasPreviousLesson,
   lessonTitle = "Current Lesson",
   questions = [],
-  onQuestionAnswered
+  onQuestionAnswered,
+  lessonId,
+  onProgressUpdate,
+  markLessonComplete,
+  isLessonCompleted,
+  autoComplete = false,
+  onVideoEnd
 }) => {
+  // Refs
   const playerRef = useRef(null);
   const containerRef = useRef(null);
   const controlsTimeoutRef = useRef(null);
+  const progressIntervalRef = useRef(null);
   
-  // Basic player state
+  // Function refs to prevent re-renders
+  const onProgressUpdateRef = useRef(onProgressUpdate);
+  const markLessonCompleteRef = useRef(markLessonComplete);
+  const onVideoEndRef = useRef(onVideoEnd);
+  
+  // Completion tracking refs
+  const hasEndedRef = useRef(false);
+  const hasAutoCompletedRef = useRef(false);
+  
+  // State
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -46,7 +62,20 @@ const EdpuzzleVideoPlayer = ({
   
   const playbackRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   
-  // Extract video ID from URL
+  // Update function refs when props change
+  useEffect(() => {
+    onProgressUpdateRef.current = onProgressUpdate;
+    markLessonCompleteRef.current = markLessonComplete;
+    onVideoEndRef.current = onVideoEnd;
+  }, [onProgressUpdate, markLessonComplete, onVideoEnd]);
+  
+  // Reset completion flags when video changes
+  useEffect(() => {
+    hasEndedRef.current = false;
+    hasAutoCompletedRef.current = false;
+  }, [videoUrl]);
+
+  // Extract YouTube video ID
   const getVideoId = (url) => {
     if (!url) return null;
     const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -56,13 +85,13 @@ const EdpuzzleVideoPlayer = ({
 
   const videoId = getVideoId(videoUrl);
 
-  // Simple YouTube player options
+  // YouTube player options
   const opts = {
     height: '100%',
     width: '100%',
     playerVars: {
       autoplay: 0,
-      controls: 0, // Hide YouTube controls
+      controls: 0,
       rel: 0,
       modestbranding: 1,
       playsinline: 1,
@@ -71,25 +100,121 @@ const EdpuzzleVideoPlayer = ({
     },
   };
 
-  // Basic event handlers
-  const onReady = (event) => {
+  // YouTube event handlers
+  const onReady = useCallback((event) => {
     playerRef.current = event.target;
     setDuration(event.target.getDuration());
     event.target.setVolume(volume);
     if (isMuted) event.target.mute();
     event.target.setPlaybackRate(playbackRate);
-  };
+  }, [volume, isMuted, playbackRate]);
 
-  const onStateChange = (event) => {
-    setIsPlaying(event.data === 1);
-  };
+  const onStateChange = useCallback((event) => {
+    const playerState = event.data;
+    
+    // Update play/pause state
+    setIsPlaying(playerState === 1);
+    
+    // Handle video end - prevent duplicate calls
+    if (playerState === 0 && !hasEndedRef.current) {
+      hasEndedRef.current = true;
+      hasAutoCompletedRef.current = true;
+      console.log('🎬 Video playback ended');
+      
+      setTimeout(() => {
+        onVideoEndRef.current?.();
+        
+        if (onProgressUpdateRef.current && lessonId) {
+          onProgressUpdateRef.current(lessonId, 100);
+        }
+        
+        if (autoComplete && markLessonCompleteRef.current && !isLessonCompleted) {
+          console.log('🚀 Auto-completing from video end...');
+          markLessonCompleteRef.current();
+        }
+      }, 100);
+    }
+    
+    // Update duration when video starts
+    if (playerState === 1 && playerRef.current) {
+      setDuration(playerRef.current.getDuration());
+    }
+  }, [lessonId, autoComplete, isLessonCompleted]);
 
-  const onError = (error) => {
+  const onError = useCallback((error) => {
     console.error('YouTube Player Error:', error);
-  };
+  }, []);
 
-  // Basic player controls
-  const togglePlay = () => {
+  // Progress tracking - FIXED: No infinite loops
+  useEffect(() => {
+    if (!isPlaying) {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+      return;
+    }
+
+    // Reset completion flag when starting playback
+    hasAutoCompletedRef.current = false;
+
+    const updateProgress = () => {
+      if (!playerRef.current || !playerRef.current.getCurrentTime) return;
+      
+      try {
+        const currentTime = playerRef.current.getCurrentTime();
+        const currentDuration = playerRef.current.getDuration();
+        
+        // Update current time with debounce
+        setCurrentTime(prev => {
+          if (Math.abs(prev - currentTime) < 0.5) return prev;
+          return currentTime;
+        });
+        
+        if (currentDuration > 0) {
+          const progress = (currentTime / currentDuration) * 100;
+          
+          // Report progress to parent
+          if (onProgressUpdateRef.current && lessonId) {
+            onProgressUpdateRef.current(lessonId, progress);
+          }
+          
+          // Auto-complete at 99% - prevent duplicate calls
+          if (progress >= 99 && 
+              autoComplete && 
+              markLessonCompleteRef.current && 
+              !isLessonCompleted &&
+              !hasAutoCompletedRef.current) {
+            
+            console.log(`🎯 Video at ${Math.round(progress)}%, auto-completing...`);
+            hasAutoCompletedRef.current = true;
+            markLessonCompleteRef.current();
+          }
+        }
+      } catch (error) {
+        console.error('Error updating progress:', error);
+      }
+    };
+
+    // Clear existing interval
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+
+    // Start progress tracking
+    progressIntervalRef.current = setInterval(updateProgress, 1000);
+    updateProgress();
+
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+    };
+  }, [isPlaying, lessonId, autoComplete, isLessonCompleted]);
+
+  // Player controls
+  const togglePlay = useCallback(() => {
     if (playerRef.current) {
       if (isPlaying) {
         playerRef.current.pauseVideo();
@@ -97,32 +222,32 @@ const EdpuzzleVideoPlayer = ({
         playerRef.current.playVideo();
       }
     }
-  };
+  }, [isPlaying]);
 
-  const seekTo = (seconds) => {
+  const seekTo = useCallback((seconds) => {
     if (playerRef.current) {
       playerRef.current.seekTo(seconds, true);
     }
-  };
+  }, []);
 
-  const skip = (seconds) => {
+  const skip = useCallback((seconds) => {
     if (playerRef.current) {
       const newTime = Math.max(0, Math.min(currentTime + seconds, duration));
       seekTo(newTime);
     }
-  };
+  }, [currentTime, duration, seekTo]);
 
   // Volume controls
-  const handleVolumeChange = (e) => {
+  const handleVolumeChange = useCallback((e) => {
     const newVolume = parseInt(e.target.value);
     setVolume(newVolume);
     if (playerRef.current) {
       playerRef.current.setVolume(newVolume);
       setIsMuted(newVolume === 0);
     }
-  };
+  }, []);
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     if (playerRef.current) {
       if (isMuted) {
         playerRef.current.unMute();
@@ -132,10 +257,10 @@ const EdpuzzleVideoPlayer = ({
         setIsMuted(true);
       }
     }
-  };
+  }, [isMuted]);
 
-  // Fullscreen - SIMPLE implementation
-  const toggleFullscreen = () => {
+  // Fullscreen
+  const toggleFullscreen = useCallback(() => {
     if (!containerRef.current) return;
     
     if (!document.fullscreenElement) {
@@ -143,16 +268,16 @@ const EdpuzzleVideoPlayer = ({
     } else {
       document.exitFullscreen?.();
     }
-  };
+  }, []);
 
-  // Playback rate change
-  const changePlaybackRate = (rate) => {
+  // Playback rate
+  const changePlaybackRate = useCallback((rate) => {
     setPlaybackRate(rate);
     if (playerRef.current) {
       playerRef.current.setPlaybackRate(rate);
     }
     setShowSettings(false);
-  };
+  }, []);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -164,7 +289,7 @@ const EdpuzzleVideoPlayer = ({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  // Disable right-click on the video player
+  // Disable right-click
   useEffect(() => {
     const handleContextMenu = (e) => {
       e.preventDefault();
@@ -178,56 +303,49 @@ const EdpuzzleVideoPlayer = ({
     }
   }, []);
 
-  // Format time
-  const formatTime = (seconds) => {
+  // Helper functions
+  const formatTime = useCallback((seconds) => {
     if (isNaN(seconds) || seconds === undefined) return "0:00";
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-  };
+  }, []);
 
-  // Calculate progress percentage
   const progressPercentage = duration ? (currentTime / duration) * 100 : 0;
 
-  // Handle progress bar click
-  const handleProgressClick = (e) => {
+  const handleProgressClick = useCallback((e) => {
     if (!duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const percentage = clickX / rect.width;
     const newTime = duration * percentage;
     seekTo(newTime);
-  };
+  }, [duration, seekTo]);
 
-  // Update current time periodically
+  // Control visibility timeout
   useEffect(() => {
-    if (!isPlaying) return;
-
-    const interval = setInterval(() => {
-      if (playerRef.current && playerRef.current.getCurrentTime) {
-        setCurrentTime(playerRef.current.getCurrentTime());
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isPlaying]);
-
-  // Hide controls after inactivity
-  useEffect(() => {
-    if (!isPlaying) return;
-
+    if (!showControls || !isPlaying) return;
+    
     const timer = setTimeout(() => {
       setShowControls(false);
     }, 3000);
 
     return () => clearTimeout(timer);
-  }, [isPlaying, showControls]);
+  }, [showControls, isPlaying]);
 
-  const resetControlsTimeout = () => {
+  const resetControlsTimeout = useCallback(() => {
     setShowControls(true);
-  };
+    
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+    
+    controlsTimeoutRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 3000);
+  }, []);
 
-  // Close settings when clicking outside
+  // Click outside settings menu
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (showSettings && !e.target.closest('.settings-menu') && !e.target.closest('.settings-button')) {
@@ -239,6 +357,19 @@ const EdpuzzleVideoPlayer = ({
     return () => document.removeEventListener('click', handleClickOutside);
   }, [showSettings]);
 
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+      }
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Video not available
   if (!videoId) {
     return (
       <div className="aspect-video bg-gray-900 flex flex-col items-center justify-center rounded-xl p-4">
@@ -259,7 +390,7 @@ const EdpuzzleVideoPlayer = ({
       onTouchStart={resetControlsTimeout}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* YouTube Player - Let react-youtube handle it */}
+      {/* YouTube Player */}
       <div className="aspect-video">
         <YouTube
           videoId={videoId}
@@ -272,7 +403,7 @@ const EdpuzzleVideoPlayer = ({
         />
       </div>
 
-      {/* Floating Fullscreen Button - Top Right Corner */}
+      {/* Fullscreen Button */}
       {showControls && (
         <button
           onClick={toggleFullscreen}
@@ -314,23 +445,6 @@ const EdpuzzleVideoPlayer = ({
           </div>
         </div>
       )}
-
-      {/* Center Play/Pause Button */}
-      {/* {showControls && (
-        <div className="absolute inset-0 flex items-center justify-center z-10">
-          <button
-            onClick={togglePlay}
-            className="p-4 bg-white bg-opacity-20 rounded-full hover:bg-opacity-30 backdrop-blur-sm transition-transform hover:scale-105"
-            title={isPlaying ? "Pause" : "Play"}
-          >
-            {isPlaying ? (
-              <Pause className="h-12 w-12 text-white sm:h-16 sm:w-16" />
-            ) : (
-              <Play className="h-12 w-12 text-white sm:h-16 sm:w-16 ml-1" />
-            )}
-          </button>
-        </div>
-      )} */}
 
       {/* Bottom Controls */}
       {showControls && (
@@ -393,9 +507,8 @@ const EdpuzzleVideoPlayer = ({
               </div>
             </div>
             
-            {/* Right side - Settings and Next Lesson */}
+            {/* Right side */}
             <div className="flex items-center gap-2">
-              {/* Next Lesson Button - Replaces Captions button */}
               {hasNextLesson && (
                 <button
                   onClick={(e) => {
@@ -409,7 +522,6 @@ const EdpuzzleVideoPlayer = ({
                 </button>
               )}
               
-              {/* Settings button */}
               <button
                 onClick={() => setShowSettings(!showSettings)}
                 className={`settings-button p-2 rounded-full ${showSettings ? 'bg-blue-600 text-white' : 'text-white hover:bg-white hover:bg-opacity-20'}`}
@@ -456,9 +568,6 @@ const EdpuzzleVideoPlayer = ({
           </div>
         </div>
       )}
-
-      {/* Show hint when controls are hidden */}
-      
     </div>
   );
 };
@@ -470,7 +579,13 @@ EdpuzzleVideoPlayer.defaultProps = {
   hasPreviousLesson: false,
   lessonTitle: "Current Lesson",
   questions: [],
-  onQuestionAnswered: () => {}
+  onQuestionAnswered: () => {},
+  lessonId: null,
+  onProgressUpdate: () => {},
+  markLessonComplete: () => {},
+  isLessonCompleted: false,
+  autoComplete: false,
+  onVideoEnd: () => {}
 };
 
 export default EdpuzzleVideoPlayer;

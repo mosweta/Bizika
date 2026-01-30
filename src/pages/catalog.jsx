@@ -282,7 +282,7 @@ const enrollInCourse = async (courseId) => {
               Browse our catalog of courses and start your learning journey today
             </p>
             
-            <div className="max-w-2xl mx-auto">
+            {/* <div className="max-w-2xl mx-auto">
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
                 <input
@@ -293,7 +293,7 @@ const enrollInCourse = async (courseId) => {
                   className="w-full pl-12 pr-4 py-3 rounded-lg text-gray-900"
                 />
               </div>
-            </div>
+            </div> */}
           </div>
         </div>
       </div>
@@ -336,7 +336,7 @@ const enrollInCourse = async (courseId) => {
               </select>
             </div>
             
-            <div className="flex-1">
+            {/* <div className="flex-1">
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Sort By
               </label>
@@ -345,7 +345,7 @@ const enrollInCourse = async (courseId) => {
                 <option>Newest</option>
                 <option>Highest Rated</option>
               </select>
-            </div>
+            </div> */}
           </div>
         </div>
 

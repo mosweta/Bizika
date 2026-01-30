@@ -22,6 +22,18 @@ import CourseCatalog from './pages/catalog.jsx'
 import CoursePage from './pages/coursepage.jsx'
 import StudentDashboard from './pages/student.jsx';
 import CourseDetails from "./pages/coursedetails.jsx";
+import EmailActionHandler from './pages/emailhandler.jsx';
+import ForgotPassword from './pages/forgotpassword.jsx';
+import PasswordReset from './pages/resetpassword.jsx';
+import TakeQuiz from './pages/takequiz.jsx';
+import QuizResults from './pages/quizresults.jsx';
+import QuizManager from './pages/quizmanager.jsx';
+import CreateQuiz from './pages/createquiz.jsx';
+import QuizDetails from './pages/quizdetails.jsx';
+import TermsConditions from './pages/terms.jsx';
+import PrivacyPolicy from './pages/privacy.jsx';
+
+
 
 // Loading component
 const LoadingScreen = () => (
@@ -29,6 +41,53 @@ const LoadingScreen = () => (
     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
   </div>
 );
+// Add to main.jsx or App.jsx
+const animateFavicon = () => {
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (!favicon) return;
+  
+  let scale = 1;
+  let direction = 0.05;
+  
+  const animate = () => {
+    // Create a canvas to manipulate favicon
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    
+    // Draw logo with scale effect
+    const img = new Image();
+    img.src = '/logo.png';
+    img.onload = () => {
+      ctx.clearRect(0, 0, 32, 32);
+      ctx.save();
+      ctx.translate(16, 16);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, -16, -16, 32, 32);
+      ctx.restore();
+      
+      // Update favicon
+      favicon.href = canvas.toDataURL('image/png');
+    };
+    
+    // Update scale for next frame
+    scale += direction;
+    if (scale > 1.2 || scale < 0.8) direction *= -1;
+    
+    requestAnimationFrame(animate);
+  };
+  
+  // Run for 3 seconds
+  animate();
+  setTimeout(() => {
+    // Reset to original favicon
+    favicon.href = '/logo.png';
+  }, 3000);
+};
+
+// Call when app loads
+animateFavicon();
 
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -53,7 +112,7 @@ import {
 function Home() {
   const [courses, setCourses] = useState([]);
   const [stats, setStats] = useState({
-    students: 1250,
+    students: 10,
     courses: 42,
     completionRate: 94,
     satisfaction: 98
@@ -271,14 +330,17 @@ function Home() {
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
-            <div className="flex items-center">
-              <Link to="/" className="flex items-center space-x-3">
-                <div className="h-10 w-10 bg-blue-600 rounded-xl flex items-center justify-center">
-                  <BookOpen className="h-6 w-6 text-white" />
-                </div>
-                <span className="text-xl font-bold text-gray-900">Bizika LMS</span>
-              </Link>
-            </div>
+            {/* Logo - Simple replacement */}
+<div className="flex items-center">
+  <Link to="/" className="flex items-center space-x-3">
+    <img 
+      src="/logo4.png" 
+      alt="Pavoc LMS Logo" 
+      className="h-15 w-15 rounded-xl object-cover"
+    />
+    <span className="text-xl font-bold text-gray-900">Pavoc LMS</span>
+  </Link>
+</div>
 
             {/* Desktop Navigation */}
             <div className="hidden md:flex items-center space-x-8">
@@ -707,11 +769,20 @@ function Home() {
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
             <div>
+              {/* Logo - Simple replacement */}
+
+  
+    
+   
               <div className="flex items-center mb-6">
-                <div className="h-10 w-10 bg-blue-600 rounded-xl flex items-center justify-center">
-                  <BookOpen className="h-6 w-6 text-white" />
+                <div className="h-10 w-10 bg-gray-200 rounded-xl flex items-center justify-center">
+                  <img 
+      src="/logo4.png" 
+      alt="Pavoc LMS Logo" 
+      className="h-12 w-10 rounded-xl object-cover"
+    />
                 </div>
-                <span className="text-xl font-bold text-white ml-3">Bizika LMS</span>
+                <span className="text-xl font-bold text-white ml-3">Pavoc LMS</span>
               </div>
               <p className="text-gray-400">
                 Empowering professionals with practical and relevant education for real-world success across domains.
@@ -730,10 +801,9 @@ function Home() {
             <div>
               <h4 className="text-white font-semibold mb-4">Resources</h4>
               <ul className="space-y-3">
-                <li><Link to="/blog" className="hover:text-white transition-colors">Blog</Link></li>
-                <li><Link to="/help" className="hover:text-white transition-colors">Help Center</Link></li>
                 <li><Link to="/contact" className="hover:text-white transition-colors">Contact</Link></li>
                 <li><Link to="/privacy" className="hover:text-white transition-colors">Privacy Policy</Link></li>
+                <li><Link to="/help" className="hover:text-white transition-colors">Terms and Conditions</Link></li>
               </ul>
             </div>
             
@@ -750,14 +820,14 @@ function Home() {
                 </li>
                 <li className="flex items-center gap-2">
                   <Users className="h-4 w-4" />
-                  <span>1,250+ Students</span>
+                  <span>10+ Students</span>
                 </li>
               </ul>
             </div>
           </div>
           
           <div className="border-t border-gray-800 mt-8 pt-8 text-center text-gray-500">
-            <p>© {new Date().getFullYear()} Bizika LMS. All rights reserved.</p>
+            <p>© {new Date().getFullYear()} Pavoc LMS. All rights reserved.</p>
           </div>
         </div>
       </footer>
@@ -822,23 +892,41 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/terms" element={<TermsConditions />} />
+        <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/courses" element={<CourseCatalog />} />
         <Route path="/course-details/:courseId" element={<CourseDetails />} />
-        
+        <Route path="/emails" element={<EmailActionHandler />} />
+        <Route path="/reset-password" element={<PasswordReset />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/course/:courseId/quiz" element={<TakeQuiz />} />
+        <Route path="/course/:courseId/quiz-results" element={<QuizResults />} />
+        <Route path="/course/:courseId/quiz/:quizId" element={<TakeQuiz />} />
+
+
         {/* Protected admin routes */}
         <Route path="/admin/*" element={
           <PrivateRoute allowedRoles={['admin']}>
             <AdminDashboard />
           </PrivateRoute>
         } />
+        // Add these routes
+
+<Route path="/admin/quizzes" element={<QuizManager />} />
+<Route path="/admin/create-quiz" element={<CreateQuiz />} />
+<Route path="/admin/create-quiz/:courseId" element={<CreateQuiz />} />
+<Route path="/admin/quiz-details/:courseId/:userId" element={<QuizDetails />} />
+ro
         
         
         {/* Protected student/tutor routes */}
         <Route path="/student/*" element={
-          <PrivateRoute allowedRoles={['student', 'admin']}>
+          <PrivateRoute allowedRoles={['student']}>
             <StudentDashboard />
+          
           </PrivateRoute>
         } />
+          
         <Route path="/course/:courseId" element={
           <PrivateRoute allowedRoles={['student', 'admin']}>
             <CoursePage />

@@ -294,7 +294,7 @@ const handleUnenroll = async () => {
     return;
   }
 
-  if (!window.confirm(`Are you sure you want to unenroll from "${course.title}"?\n\nYour progress will be saved for 90 days. You can re-enroll anytime to continue.`)) {
+  if (!window.confirm(`Are you sure you want to unenroll from "${course.title}"?\n\nIf you unenroll, your progress will be lost.`)) {
     return;
   }
 
@@ -348,7 +348,7 @@ const handleUnenroll = async () => {
       setIsEnrolled(false);
       
       // Show success message
-      alert(`✅ Successfully unenrolled from "${course.title}".\n\nYour progress has been saved. You can re-enroll anytime within 90 days to continue where you left off.`);
+      alert(`✅ Successfully unenrolled from "${course.title}".\n\nYour progress will be lost. You can re-enroll anytime.`);
       
     } else {
       alert('Enrollment record not found. You may already be unenrolled.');
@@ -520,8 +520,10 @@ const handleUnenroll = async () => {
                       </>
                     ) : isEnrolled ? (
                       <>
+                      <Link to={`/courses/${courseId}/lessons`} className="flex items-center gap-2">
                         <CheckCircle size={20} />
                         Continue Learning
+                      </Link>
                       </>
                     ) : (
                       <>
@@ -1070,13 +1072,13 @@ const handleUnenroll = async () => {
           <svg className="w-3 h-3 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
           </svg>
-          <span>Your progress will be saved for 90 days</span>
+          <span>Your progress will be lost</span>
         </p>
         <p className="flex items-start gap-1">
           <svg className="w-3 h-3 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
           </svg>
-          <span>You can re-enroll anytime to continue</span>
+          <span>You can re-enroll anytime</span>
         </p>
       </div>
     </div>

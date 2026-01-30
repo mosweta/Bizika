@@ -208,7 +208,6 @@ const formatLastLogin = (date) => {
   const getRoleColor = (role) => {
     switch(role) {
       case "admin": return "bg-purple-100 text-purple-800";
-      case "tutor": return "bg-green-100 text-green-800";
       default: return "bg-blue-100 text-blue-800";
     }
   };
@@ -251,10 +250,6 @@ const formatLastLogin = (date) => {
           <div className="text-2xl font-bold text-purple-600">{stats.admins}</div>
           <div className="text-sm text-gray-600">Admins</div>
         </div>
-        <div className="bg-white rounded-xl p-4 shadow border">
-          <div className="text-2xl font-bold text-orange-600">{stats.activeToday}</div>
-          <div className="text-sm text-gray-600">Active Today</div>
-        </div>
       </div>
 
       {/* Search and Filters */}
@@ -281,7 +276,6 @@ const formatLastLogin = (date) => {
             >
               <option value="all">All Roles</option>
               <option value="student">Students</option>
-              <option value="tutor">Tutors</option>
               <option value="admin">Admins</option>
             </select>
             <button
@@ -314,7 +308,6 @@ const formatLastLogin = (date) => {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Joined</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Login</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
               </tr>
             </thead>
@@ -469,10 +462,6 @@ const formatLastLogin = (date) => {
           <div className="text-center p-3 bg-white rounded-lg">
             <div className="text-lg font-bold text-purple-600">{stats.admins}</div>
             <div className="text-sm text-gray-600">Admins</div>
-          </div>
-          <div className="text-center p-3 bg-white rounded-lg">
-            <div className="text-lg font-bold text-orange-600">{stats.activeToday}</div>
-            <div className="text-sm text-gray-600">Active Today</div>
           </div>
         </div>
       </div>
