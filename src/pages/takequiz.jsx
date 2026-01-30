@@ -187,12 +187,22 @@ export default function TakeQuiz() {
       
       if (!enrollmentSnap.empty) {
         const enrollmentDoc = enrollmentSnap.docs[0];
+        const enrollmentData = enrollmentDoc.data();
+
+        const previousHighestScore =
+          typeof enrollmentData.highestQuizScore === "number"
+            ? enrollmentData.highestQuizScore
+            : 0;
+
+        const newHighestScore = Math.max(previousHighestScore, score);
+
         await updateDoc(doc(db, "enrollments", enrollmentDoc.id), {
           quizCompleted: true,
           quizScore: score,
-          highestQuizScore: isHighest ? score : enrollmentDoc.data().highestQuizScore,
+          highestQuizScore: newHighestScore,
           lastQuizAttempt: serverTimestamp()
         });
+
       }
 
       // Navigate to results page
