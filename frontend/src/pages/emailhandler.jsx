@@ -73,6 +73,79 @@ export default function EmailActionHandler() {
     // Don't setLoading(false) here - the individual handlers do it
   }
 }, [mode, oobCode, navigate]);
+// In EmailActionHandler.jsx - UPDATED URL FIXER
+useEffect(() => {
+  const fixGoogleWrappedUrl = () => {
+    const currentUrl = window.location.href;
+    console.log('🔍 Current full URL:', currentUrl);
+    
+    // Pattern: https://www.google.com/bizika.pages.dev/emails?...
+    if (currentUrl.includes('www.google.com/bizika.pages.dev/emails')) {
+      console.log('🔄 Detected Google proxy for /emails route');
+      
+      try {
+        // Create the correct URL by removing "www.google.com/"
+        const correctUrl = currentUrl.replace('www.google.com/', '');
+        console.log('🔗 Correct URL:', correctUrl);
+        
+        // Replace the URL in browser history
+        window.history.replaceState({}, document.title, correctUrl);
+        console.log('✅ URL fixed in history');
+        
+        return true;
+      } catch (error) {
+        console.error('❌ Error fixing URL:', error);
+      }
+    }
+    
+    // Alternative pattern: https://www.google.com/url?q=https://bizika.pages.dev/emails...
+    else if (currentUrl.includes('www.google.com/url?q=') && currentUrl.includes('bizika.pages.dev/emails')) {
+      console.log('🔄 Detected Google redirect wrapper');
+      
+      try {
+        const urlObj = new URL(currentUrl);
+        const originalUrlEncoded = urlObj.searchParams.get('q');
+        
+        if (originalUrlEncoded) {
+          const originalUrl = decodeURIComponent(originalUrlEncoded);
+          console.log('🔗 Original URL:', originalUrl);
+          
+          // Clean the URL (remove any Google tracking parameters)
+          const cleanUrl = new URL(originalUrl);
+          cleanUrl.searchParams.delete('utm_source');
+          cleanUrl.searchParams.delete('utm_medium');
+          cleanUrl.searchParams.delete('utm_campaign');
+          
+          const finalUrl = cleanUrl.toString();
+          console.log('🔗 Clean URL:', finalUrl);
+          
+          window.history.replaceState({}, document.title, finalUrl);
+          console.log('✅ URL fixed');
+          
+          return true;
+        }
+      } catch (error) {
+        console.error('❌ Error fixing redirect URL:', error);
+      }
+    }
+    
+    return false;
+  };
+  
+  // Execute the fix
+  const urlWasFixed = fixGoogleWrappedUrl();
+  
+  if (urlWasFixed) {
+    console.log('🔄 URL was fixed, updating search parameters...');
+    
+    // Force update of searchParams by triggering a re-render
+    // We'll use a timeout to ensure the URL change is processed
+    setTimeout(() => {
+      // Force re-evaluation of search parameters
+      window.location.search = window.location.search;
+    }, 50);
+  }
+}, []);
 
 const handleResetPassword = async (code, signal) => {
     try {
