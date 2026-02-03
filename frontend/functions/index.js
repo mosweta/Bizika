@@ -1,106 +1,66 @@
 // functions/index.js - CORRECTED VERSION
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
-const { onCall, onRequest } = require("firebase-functions/v2/https"); // Added onRequest
+const { onCall, onRequest } = require("firebase-functions/v2/https");
 const { HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
-const { getFunctions } = require("firebase-admin/functions"); // Moved to top
 const { S3Client, DeleteObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
-initializeApp();
+// Initialize Firebase Admin FIRST
+const adminApp = initializeApp();
 
 // ----- GLOBAL VARIABLES -----
-let r2Client = null; // ← ADD THIS LINE (MISSING IN YOUR CODE)
+let r2Client = null;
 
-// ----- EXISTING FUNCTION (Keep this exactly as is) -----
-exports.updateCourseRating = onDocumentWritten(
-  {
-    document: "reviews/{reviewId}",
-    region: "africa-south1",
-    timeoutSeconds: 30,
-    memory: "128MB",
-    maxInstances: 3,
-  },
-  async (event) => {
-    try {
-      // Get the review data
-      const review = event.data.after.data() || event.data.before.data();
-      
-      if (!review || !review.courseId) {
-        console.log("No courseId found, skipping update");
-        return;
+// ----- HELPER FUNCTION FOR CONFIG -----
+const getFirebaseConfig = () => {
+  // In Firebase Cloud Functions, config is available via process.env
+  // For Firebase Functions, we should use functions.config() but need to require it properly
+  try {
+    // Import functions inside the helper to avoid circular dependencies
+    const functions = require('firebase-admin/functions');
+    const adminFunctions = functions.getFunctions(adminApp);
+    
+    // Get runtime config
+    const config = process.env.FUNCTIONS_EMULATOR 
+      ? require('./config.json') // Local development
+      : require('firebase-functions').config(); // Production
+    
+    console.log("📋 Config keys:", Object.keys(config || {}));
+    
+    return config;
+  } catch (error) {
+    console.error("Error getting config:", error);
+    
+    // Fallback to environment variables (for local development)
+    return {
+      r2: {
+        account_id: process.env.R2_ACCOUNT_ID,
+        access_key: process.env.R2_ACCESS_KEY,
+        secret_key: process.env.R2_SECRET_KEY,
+        bucket_name: process.env.R2_BUCKET_NAME || "bizika-web"
       }
-      
-      const courseId = review.courseId;
-      console.log(`Updating rating for course: ${courseId}`);
-
-      // Get Firestore instance
-      const firestore = getFirestore();
-      
-      // Get all reviews for this course
-      const reviewsSnapshot = await firestore
-        .collection("reviews")
-        .where("courseId", "==", courseId)
-        .get();
-
-      // Calculate average rating
-      let totalRating = 0;
-      let reviewCount = 0;
-      
-      reviewsSnapshot.forEach((doc) => {
-        const rating = doc.data().rating;
-        if (rating >= 1 && rating <= 5) {
-          totalRating += rating;
-          reviewCount++;
-        }
-      });
-
-      // Calculate average (to 1 decimal place)
-      const averageRating = reviewCount > 0
-        ? Math.round((totalRating / reviewCount) * 10) / 10
-        : 0;
-
-      console.log(`Calculated: ${averageRating} from ${reviewCount} reviews`);
-
-      // Update the course document
-      await firestore
-        .collection("courses")
-        .doc(courseId)
-        .update({
-          averageRating,
-          totalReviews: reviewCount,
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-
-      console.log(`✅ Successfully updated course: ${courseId}`);
-
-    } catch (error) {
-      console.error("Error updating course rating:", error);
-    }
+    };
   }
-);
+};
 
-// ----- R2 CLIENT HELPER -----
+// ----- R2 CLIENT HELPER (FIXED) -----
 const getR2Client = () => {
   if (!r2Client) {
     try {
       console.log("🔄 Initializing R2 client...");
       
-      // Get Firebase config
-      const adminFunctions = getFunctions();
-      const allConfig = adminFunctions.config();
+      // Get config
+      const config = getFirebaseConfig();
       
-      console.log("📋 All Firebase config keys:", Object.keys(allConfig));
-      console.log("📦 R2 config exists:", !!allConfig.r2);
-      
-      if (!allConfig.r2) {
-        console.error("❌ R2 config not found in Firebase config");
-        console.error("Available config:", allConfig);
-        throw new Error("R2 configuration missing from Firebase config");
+      if (!config.r2) {
+        console.error("❌ R2 config not found");
+        console.error("Available config:", config);
+        throw new Error("R2 configuration missing");
       }
       
-      const { account_id, access_key, secret_key, bucket_name } = allConfig.r2;
+      const { account_id, access_key, secret_key, bucket_name } = config.r2;
       
       console.log("🔑 R2 Config loaded:", {
         accountId: account_id ? account_id.substring(0, 10) + '...' : 'MISSING',
@@ -110,7 +70,7 @@ const getR2Client = () => {
       });
       
       if (!account_id || !access_key || !secret_key) {
-        throw new Error(`Missing R2 credentials: account_id=${!!account_id}, access_key=${!!access_key}, secret_key=${!!secret_key}`);
+        throw new Error(`Missing R2 credentials`);
       }
       
       r2Client = new S3Client({
@@ -142,8 +102,71 @@ const isAdmin = async (userId) => {
 
 // ----- CLOUD FUNCTIONS -----
 
-// 1. HTTP Function with CORS (ADD THIS - NOT IN YOUR CODE)
-exports.generateResourceUrlHttp = onRequest(
+// 1. Update Course Rating (EXISTING - Keep as is)
+exports.updateCourseRating = onDocumentWritten(
+  {
+    document: "reviews/{reviewId}",
+    region: "africa-south1",
+    timeoutSeconds: 30,
+    memory: "128MB",
+    maxInstances: 3,
+  },
+  async (event) => {
+    // ... keep existing code unchanged ...
+    try {
+      const review = event.data.after.data() || event.data.before.data();
+      
+      if (!review || !review.courseId) {
+        console.log("No courseId found, skipping update");
+        return;
+      }
+      
+      const courseId = review.courseId;
+      console.log(`Updating rating for course: ${courseId}`);
+
+      const firestore = getFirestore();
+      
+      const reviewsSnapshot = await firestore
+        .collection("reviews")
+        .where("courseId", "==", courseId)
+        .get();
+
+      let totalRating = 0;
+      let reviewCount = 0;
+      
+      reviewsSnapshot.forEach((doc) => {
+        const rating = doc.data().rating;
+        if (rating >= 1 && rating <= 5) {
+          totalRating += rating;
+          reviewCount++;
+        }
+      });
+
+      const averageRating = reviewCount > 0
+        ? Math.round((totalRating / reviewCount) * 10) / 10
+        : 0;
+
+      console.log(`Calculated: ${averageRating} from ${reviewCount} reviews`);
+
+      await firestore
+        .collection("courses")
+        .doc(courseId)
+        .update({
+          averageRating,
+          totalReviews: reviewCount,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+      console.log(`✅ Successfully updated course: ${courseId}`);
+
+    } catch (error) {
+      console.error("Error updating course rating:", error);
+    }
+  }
+);
+
+// 2. HTTP Function with CORS (FIXED NAME)
+exports.generateResourceUrlHttpEndpoint = onRequest(  // ← CHANGED NAME
   {
     region: "africa-south1",
     cors: true,
@@ -178,7 +201,6 @@ exports.generateResourceUrlHttp = onRequest(
         return;
       }
       
-      // Use same logic as your callable function
       const client = getR2Client();
       const bucketName = "bizika-web";
       
@@ -205,7 +227,7 @@ exports.generateResourceUrlHttp = onRequest(
   }
 );
 
-// 2. Callable Function (your existing)
+// 3. Callable Function (FIXED)
 exports.generateResourceUrl = onCall(
   {
     region: "africa-south1",
@@ -222,8 +244,8 @@ exports.generateResourceUrl = onCall(
   async (request) => {
     console.log("🚀 === generateResourceUrl START ===");
     console.log("👤 User:", request.auth?.uid);
-    console.log("📁 File key:", request.data.fileKey);
-    console.log("⏱️ Expires in:", request.data.expiresIn || 3600);
+    console.log("📁 File key:", request.data?.fileKey);
+    console.log("⏱️ Expires in:", request.data?.expiresIn || 3600);
     
     try {
       // 1. Authentication check
@@ -232,7 +254,7 @@ exports.generateResourceUrl = onCall(
         throw new HttpsError("unauthenticated", "Must be authenticated");
       }
 
-      const { fileKey, expiresIn = 3600 } = request.data;
+      const { fileKey, expiresIn = 3600 } = request.data || {};
       
       if (!fileKey) {
         console.error("❌ No fileKey provided");
@@ -276,7 +298,6 @@ exports.generateResourceUrl = onCall(
       console.error("Error name:", error.name);
       console.error("Error message:", error.message);
       console.error("Error code:", error.code);
-      console.error("Full error:", error);
       
       // Specific error handling
       if (error.name === 'NoSuchKey' || error.code === 'NoSuchKey') {
@@ -296,7 +317,7 @@ exports.generateResourceUrl = onCall(
   }
 );
 
-// 3. Delete R2 file (callable function)
+// 4. Delete R2 file (callable function) - Keep as is
 exports.deleteResource = onCall(
   {
     region: "africa-south1",
@@ -306,7 +327,6 @@ exports.deleteResource = onCall(
   },
   async (request) => {
     try {
-      // Check authentication
       if (!request.auth) {
         throw new HttpsError("unauthenticated", "Must be authenticated");
       }
@@ -317,7 +337,6 @@ exports.deleteResource = onCall(
         throw new HttpsError("invalid-argument", "File key is required");
       }
 
-      // Only admins can delete files
       const userIsAdmin = await isAdmin(request.auth.uid);
       if (!userIsAdmin) {
         throw new HttpsError("permission-denied", "Admin access required");
@@ -346,7 +365,7 @@ exports.deleteResource = onCall(
   }
 );
 
-// 4. Clean up orphaned R2 files when course/lesson is deleted
+// 5. Clean up orphaned R2 files - Keep as is
 exports.cleanupCourseResources = onCall(
   {
     region: "africa-south1",
@@ -375,7 +394,6 @@ exports.cleanupCourseResources = onCall(
       const client = getR2Client();
       const bucketName = "bizika-web";
 
-      // Get all lessons from the course
       const lessonsSnapshot = await firestore
         .collection("courses")
         .doc(courseId)
@@ -385,11 +403,9 @@ exports.cleanupCourseResources = onCall(
       let deletedCount = 0;
       const errors = [];
 
-      // Delete all files from each lesson
       for (const lessonDoc of lessonsSnapshot.docs) {
         const lesson = lessonDoc.data();
         
-        // Check different resource arrays
         const resourceArrays = [
           ...(lesson.slides || []),
           ...(lesson.documents || []),
@@ -432,7 +448,7 @@ exports.cleanupCourseResources = onCall(
   }
 );
 
-// 5. Batch generate signed URLs for multiple files
+// 6. Batch generate signed URLs - Keep as is
 exports.batchGenerateUrls = onCall(
   {
     region: "africa-south1",

@@ -4,6 +4,7 @@ import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getFunctions } from "firebase/functions";
+import { confirmPasswordReset } from "firebase/auth";
 
 // Firebase configuration from environment variables
 const firebaseConfig = {
@@ -13,14 +14,12 @@ const firebaseConfig = {
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  // Remove measurementId temporarily to fix errors
-  // measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
-console.log("🔧 Firebase Config Check:");
-console.log("Project ID:", firebaseConfig.projectId);
-console.log("API Key exists:", !!firebaseConfig.apiKey);
-console.log("API Key starts with AIza:", firebaseConfig.apiKey?.startsWith('AIza'));
+// console.log("🔧 Firebase Config Check:");
+// console.log("Project ID:", firebaseConfig.projectId);
+// console.log("API Key exists:", !!firebaseConfig.apiKey);
+// console.log("API Key starts with AIza:", firebaseConfig.apiKey?.startsWith('AIza'));
 
 // Validate API key format
 if (!firebaseConfig.apiKey || !firebaseConfig.apiKey.startsWith('AIza')) {
@@ -40,7 +39,8 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
-export const functions = getFunctions(app);
+export const functions = getFunctions(app, "africa-south1");
+export { confirmPasswordReset };
 export default app;
 
 console.log("✅ Firebase initialized successfully!");
