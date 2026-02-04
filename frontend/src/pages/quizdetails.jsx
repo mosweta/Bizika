@@ -9,12 +9,11 @@ import {
   Mail, 
   Calendar, 
   Clock, 
+  Eye,
+  EyeOff,
   Award, 
   CheckCircle,
-  XCircle,
-  BarChart,
-  Download,
-  Printer
+  XCircle
 } from "lucide-react";
 
 export default function QuizDetails() {
@@ -26,6 +25,7 @@ export default function QuizDetails() {
   const [quiz, setQuiz] = useState(null);
   const [allAttempts, setAllAttempts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [hideSensitiveData, setHideSensitiveData] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -36,7 +36,12 @@ export default function QuizDetails() {
       // Fetch user data
       const userDoc = await getDoc(doc(db, "users", userId));
       if (userDoc.exists()) {
-        setUser({ id: userDoc.id, ...userDoc.data() });
+        const userData = userDoc.data();
+        setUser({ 
+          id: userDoc.id,
+          ...userData,
+          name: userData.fullName || userData.email.split('@')[0]
+        });
       }
 
       // Fetch course data
@@ -139,7 +144,7 @@ export default function QuizDetails() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header - SIMPLIFIED WITHOUT EXPORT */}
       <div className="bg-white rounded-xl shadow border p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -154,32 +159,47 @@ export default function QuizDetails() {
               <div className="flex flex-wrap items-center gap-2 text-gray-600">
                 <span>{course?.title}</span>
                 <span>•</span>
-                <span>{user?.name || user?.email}</span>
+                <span>{user?.fullName || user?.email}</span>
               </div>
             </div>
           </div>
           
           <div className="flex items-center gap-3">
-            <button className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center gap-2">
-              <Printer size={16} />
-              Print
-            </button>
-            <button className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2">
-              <Download size={16} />
-              Export
+            {/* Sensitive Data Toggle Only */}
+            <button
+              onClick={() => setHideSensitiveData(!hideSensitiveData)}
+              className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center gap-2"
+              title={hideSensitiveData ? "Show all data" : "Hide sensitive data"}
+            >
+              {hideSensitiveData ? <EyeOff size={16} /> : <Eye size={16} />}
+              {hideSensitiveData ? "Show All" : "Hide Sensitive"}
             </button>
           </div>
         </div>
 
         {/* User Info Card */}
-        <div className="bg-gray-50 rounded-lg p-4 mb-6">
+        <div className={`bg-gray-50 rounded-lg p-4 mb-6 relative transition-all duration-200 ${
+          hideSensitiveData ? 'blur-sm select-none' : ''
+        }`}>
+          {hideSensitiveData && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 rounded-lg z-10">
+              <div className="text-center p-4">
+                <EyeOff className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                <p className="text-gray-600 font-medium">Sensitive Data Hidden</p>
+                <p className="text-sm text-gray-500 mt-1">Click "Show All" button to reveal</p>
+              </div>
+            </div>
+          )}
+          
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="flex items-center gap-3">
               <div className="h-12 w-12 rounded-full bg-blue-100 flex items-center justify-center">
                 <User className="h-6 w-6 text-blue-600" />
               </div>
               <div>
-                <div className="font-medium text-gray-900">{user?.name || "No Name"}</div>
+                <div className="font-medium text-gray-900">
+                  {user?.fullName || user?.name || "No Name"}
+                </div>
                 <div className="text-sm text-gray-500">Student</div>
               </div>
             </div>
@@ -194,7 +214,7 @@ export default function QuizDetails() {
               <Calendar className="h-5 w-5 text-gray-400" />
               <div>
                 <div className="font-medium text-gray-900">
-                  {formatDate(quizResult.submittedAt)}
+                  {quizResult ? formatDate(quizResult.submittedAt) : "N/A"}
                 </div>
                 <div className="text-sm text-gray-500">Last Attempt</div>
               </div>
