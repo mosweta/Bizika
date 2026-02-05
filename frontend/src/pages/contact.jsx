@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import ReCAPTCHA from "react-google-recaptcha";
 import Swal from "sweetalert2";
-import Header from '../pages/home/header.jsx';
 import Footer from '../pages/home/footer.jsx';
 import { 
   Send, 
