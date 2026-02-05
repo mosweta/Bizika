@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { db } from "../firebase/config";
+import { db, auth } from "../firebase/config";
 import { 
   collection, 
   query, 
@@ -8,7 +8,8 @@ import {
   updateDoc, 
   doc,
   where,
-  serverTimestamp
+  serverTimestamp,
+  getCountFromServer
 } from "firebase/firestore";
 import { 
   Search, 
@@ -29,10 +30,14 @@ export default function UserManagement() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [levelFilter, setLevelFilter] = useState("all");
   const [totalUsers, setTotalUsers] = useState(0);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const pageSize = 20;
+const [enrolledCourseIds, setEnrolledCourseIds] = useState([]);
+const [user, setUser] = useState(null);
 
   // Stats
   const [stats, setStats] = useState({
@@ -44,36 +49,70 @@ export default function UserManagement() {
 
   // Fetch users with pagination
   const fetchUsers = async () => {
-    try {
-      setLoading(true);
-      const usersRef = collection(db, "users");
+  try {
+    setLoading(true);
+    const usersRef = collection(db, "users");
+    
+    let q;
+    if (roleFilter !== "all") {
+      q = query(usersRef, where("role", "==", roleFilter), orderBy("createdAt", "desc"));
+    } else {
+      q = query(usersRef, orderBy("createdAt", "desc"));
+    }
+    
+    const snapshot = await getDocs(q);
+    
+    // Create an array to hold all user promises
+    const userPromises = snapshot.docs.map(async (doc) => {
+      const userData = doc.data();
+      const userId = doc.id;
       
-      let q;
-      if (roleFilter !== "all") {
-        q = query(usersRef, where("role", "==", roleFilter), orderBy("createdAt", "desc"));
-      } else {
-        q = query(usersRef, orderBy("createdAt", "desc"));
+      // Get enrollment count for this user
+      let enrollmentCount = 0;
+      try {
+        const enrollmentsRef = collection(db, "enrollments");
+        const enrollmentQuery = query(
+          enrollmentsRef,
+          where("userId", "==", userId)
+        );
+        const countSnapshot = await getCountFromServer(enrollmentQuery);
+        enrollmentCount = countSnapshot.data().count;
+      } catch (countError) {
+        console.error(`Error counting enrollments for user ${userId}:`, countError);
+        // Fallback: regular query
+        try {
+          const enrollmentsRef = collection(db, "enrollments");
+          const enrollmentQuery = query(enrollmentsRef, where("userId", "==", userId));
+          const enrollmentSnap = await getDocs(enrollmentQuery);
+          enrollmentCount = enrollmentSnap.size;
+        } catch (fallbackError) {
+          enrollmentCount = 0;
+        }
       }
       
-      const snapshot = await getDocs(q);
-      const usersData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate?.() || new Date()
-      }));
-      
-      setUsers(usersData);
-      setTotalUsers(usersData.length);
-      setHasMore(usersData.length === pageSize);
-      
-      // Calculate stats
-      calculateStats(usersData);
-    } catch (error) {
-      console.error("Error fetching users:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+      return {
+        id: userId,
+        ...userData,
+        enrollmentCount: enrollmentCount,
+        createdAt: userData.createdAt
+      };
+    });
+    
+    // Wait for all user data to be fetched
+    const usersData = await Promise.all(userPromises);
+    
+    setUsers(usersData);
+    setTotalUsers(usersData.length);
+    setHasMore(usersData.length === pageSize);
+    
+    // Calculate stats including enrollment data
+    calculateStats(usersData);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const calculateStats = (usersData) => {
     const today = new Date();
@@ -200,10 +239,22 @@ const formatLastLogin = (date) => {
     fetchUsers();
   }, [roleFilter]);
 
-  const formatDate = (date) => {
-    if (!date) return "Never";
-    return new Date(date).toLocaleDateString();
-  };
+const formatDate = (date) => {
+  if (!date) return "Never";
+  
+  // Handle Firestore Timestamp
+  if (date.toDate) {
+    return date.toDate().toLocaleDateString();
+  }
+  
+  // Handle timestamp with seconds/nanoseconds
+  if (date.seconds) {
+    const milliseconds = date.seconds * 1000 + (date.nanoseconds || 0) / 1000000;
+    return new Date(milliseconds).toLocaleDateString();
+  }
+  
+  return new Date(date).toLocaleDateString();
+};
 
   const getRoleColor = (role) => {
     switch(role) {
@@ -216,6 +267,27 @@ const formatLastLogin = (date) => {
     return status === "active" 
       ? "bg-green-100 text-green-800" 
       : "bg-red-100 text-red-800";
+  };
+    useEffect(() => {
+      const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
+        if (currentUser) {
+          setUser(currentUser);
+          await fetchEnrolledCourses(currentUser.uid);
+        }
+      });
+      return () => unsubscribe();
+    }, []);
+const fetchEnrolledCourses = async (userId) => {
+    try {
+      const enrollmentsRef = collection(db, "enrollments");
+      const enrollmentQuery = query(enrollmentsRef, where("userId", "==", userId));
+      const enrollmentSnap = await getDocs(enrollmentQuery);
+      
+      const enrolledIds = enrollmentSnap.docs.map(doc => doc.data().courseId);
+      setEnrolledCourseIds(enrolledIds);
+    } catch (error) {
+      console.error("Error fetching enrollments:", error);
+    }
   };
 
   return (
@@ -351,10 +423,10 @@ const formatLastLogin = (date) => {
                             <Mail size={12} />
                             {user.email}
                           </div>
-                          {user.enrolledCourses && (
+                          {user.enrollmentCount > -1 && (
                             <div className="text-xs text-gray-400 flex items-center gap-1 mt-1">
                               <BookOpen size={12} />
-                              {user.enrolledCourses.length} courses
+                              {user.enrollmentCount} courses
                             </div>
                           )}
                         </div>
@@ -376,9 +448,7 @@ const formatLastLogin = (date) => {
                         {formatDate(user.createdAt)}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-900">
-                      {formatDate(user.lastLogin)}
-                    </td>
+                    
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-2">
                         <select

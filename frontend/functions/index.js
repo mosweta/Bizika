@@ -509,3 +509,273 @@ exports.batchGenerateUrls = onCall(
     }
   }
 );
+
+// 7. Count lessons and update course lessonCount
+exports.countLessonsAndUpdate = onDocumentWritten(
+  {
+    document: "courses/{courseId}/lessons/{lessonId}",
+    region: "africa-south1",
+    timeoutSeconds: 30,
+    memory: "128MB",
+    maxInstances: 3,
+  },
+  async (event) => {
+    try {
+      console.log("📊 Lesson counter triggered");
+      
+      const courseId = event.params.courseId;
+      const firestore = getFirestore();
+      
+      console.log(`📈 Counting lessons for course: ${courseId}`);
+      
+      // Get all lessons for this course
+      const lessonsSnapshot = await firestore
+        .collection("courses")
+        .doc(courseId)
+        .collection("lessons")
+        .get();
+      
+      const lessonCount = lessonsSnapshot.size;
+      const publishedLessons = lessonsSnapshot.docs.filter(doc => 
+        doc.data().isPublished !== false
+      ).length;
+      
+      console.log(`📊 Found ${lessonCount} total lessons, ${publishedLessons} published`);
+      
+      // Update the course document
+      await firestore
+        .collection("courses")
+        .doc(courseId)
+        .update({
+          lessonCount: lessonCount,
+          publishedLessonCount: publishedLessons,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      
+      console.log(`✅ Updated course ${courseId}: lessonCount=${lessonCount}, publishedLessonCount=${publishedLessons}`);
+      
+      // Also update all enrollments for this course
+      await updateEnrollmentsForCourse(firestore, courseId, lessonCount);
+      
+    } catch (error) {
+      console.error("❌ Error in countLessonsAndUpdate:", error);
+      console.error("Error stack:", error.stack);
+    }
+  }
+);
+
+// 8. Callable function to manually recount lessons for a course
+exports.recountCourseLessons = onCall(
+  {
+    region: "africa-south1",
+    timeoutSeconds: 30,
+    memory: "128MB",
+    maxInstances: 3,
+  },
+  async (request) => {
+    try {
+      // Authentication check
+      if (!request.auth) {
+        throw new HttpsError("unauthenticated", "Must be authenticated");
+      }
+      
+      const { courseId } = request.data;
+      
+      if (!courseId) {
+        throw new HttpsError("invalid-argument", "Course ID is required");
+      }
+      
+      console.log(`🔍 Manual recount requested for course: ${courseId}`);
+      
+      const firestore = getFirestore();
+      
+      // Get all lessons for this course
+      const lessonsSnapshot = await firestore
+        .collection("courses")
+        .doc(courseId)
+        .collection("lessons")
+        .get();
+      
+      const lessonCount = lessonsSnapshot.size;
+      const publishedLessons = lessonsSnapshot.docs.filter(doc => 
+        doc.data().isPublished !== false
+      ).length;
+      
+      console.log(`📊 Found ${lessonCount} total lessons, ${publishedLessons} published`);
+      
+      // Update the course document
+      await firestore
+        .collection("courses")
+        .doc(courseId)
+        .update({
+          lessonCount: lessonCount,
+          publishedLessonCount: publishedLessons,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      
+      // Update enrollments
+      await updateEnrollmentsForCourse(firestore, courseId, lessonCount);
+      
+      return {
+        success: true,
+        courseId,
+        lessonCount,
+        publishedLessonCount: publishedLessons,
+        message: `Updated course with ${lessonCount} lessons (${publishedLessons} published)`
+      };
+      
+    } catch (error) {
+      console.error("❌ Error in recountCourseLessons:", error);
+      throw new HttpsError("internal", error.message || "Failed to recount lessons");
+    }
+  }
+);
+
+// 9. Helper function to update enrollments
+async function updateEnrollmentsForCourse(firestore, courseId, totalLessons) {
+  try {
+    console.log(`🔄 Updating enrollments for course ${courseId} with ${totalLessons} total lessons`);
+    
+    // Get all enrollments for this course
+    const enrollmentsSnapshot = await firestore
+      .collection("enrollments")
+      .where("courseId", "==", courseId)
+      .get();
+    
+    if (enrollmentsSnapshot.empty) {
+      console.log("📭 No enrollments found for this course");
+      return;
+    }
+    
+    console.log(`📝 Updating ${enrollmentsSnapshot.size} enrollments`);
+    
+    const batch = firestore.batch();
+    let updatedCount = 0;
+    
+    enrollmentsSnapshot.docs.forEach(enrollmentDoc => {
+      const enrollmentData = enrollmentDoc.data();
+      const completedCount = enrollmentData.completedLessons?.length || 0;
+      
+      // Calculate progress (never exceed 100%)
+      const progress = totalLessons > 0 
+        ? Math.min(Math.round((completedCount / totalLessons) * 100), 100)
+        : 0;
+      
+      batch.update(enrollmentDoc.ref, {
+        totalLessons: totalLessons,
+        progress: progress,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      
+      updatedCount++;
+    });
+    
+    await batch.commit();
+    console.log(`✅ Updated ${updatedCount} enrollments`);
+    
+  } catch (error) {
+    console.error("⚠️ Error updating enrollments:", error);
+    // Don't throw - this shouldn't fail the main function
+  }
+}
+
+// 10. Function to fix all courses (admin only)
+exports.fixAllCourseLessonCounts = onCall(
+  {
+    region: "africa-south1",
+    timeoutSeconds: 60,
+    memory: "256MB",
+    maxInstances: 1,
+  },
+  async (request) => {
+    try {
+      // Authentication check
+      if (!request.auth) {
+        throw new HttpsError("unauthenticated", "Must be authenticated");
+      }
+      
+      // Admin check
+      const userIsAdmin = await isAdmin(request.auth.uid);
+      if (!userIsAdmin) {
+        throw new HttpsError("permission-denied", "Admin access required");
+      }
+      
+      console.log("🛠️ Starting bulk fix of all course lesson counts");
+      
+      const firestore = getFirestore();
+      
+      // Get all courses
+      const coursesSnapshot = await firestore
+        .collection("courses")
+        .get();
+      
+      console.log(`📚 Found ${coursesSnapshot.size} courses to process`);
+      
+      const results = [];
+      
+      // Process each course
+      for (const courseDoc of coursesSnapshot.docs) {
+        try {
+          const courseId = courseDoc.id;
+          
+          // Get lessons for this course
+          const lessonsSnapshot = await firestore
+            .collection("courses")
+            .doc(courseId)
+            .collection("lessons")
+            .get();
+          
+          const lessonCount = lessonsSnapshot.size;
+          const publishedLessons = lessonsSnapshot.docs.filter(doc => 
+            doc.data().isPublished !== false
+          ).length;
+          
+          // Update course
+          await firestore
+            .collection("courses")
+            .doc(courseId)
+            .update({
+              lessonCount: lessonCount,
+              publishedLessonCount: publishedLessons,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+          
+          // Update enrollments
+          await updateEnrollmentsForCourse(firestore, courseId, lessonCount);
+          
+          results.push({
+            courseId,
+            courseTitle: courseDoc.data().title || "Untitled",
+            lessonCount,
+            publishedLessonCount: publishedLessons,
+            success: true
+          });
+          
+          console.log(`✅ Processed ${courseId}: ${lessonCount} lessons`);
+          
+        } catch (error) {
+          console.error(`❌ Error processing course ${courseDoc.id}:`, error);
+          results.push({
+            courseId: courseDoc.id,
+            error: error.message,
+            success: false
+          });
+        }
+      }
+      
+      console.log("🎉 Bulk fix completed");
+      
+      return {
+        success: true,
+        totalCourses: coursesSnapshot.size,
+        processed: results.filter(r => r.success).length,
+        failed: results.filter(r => !r.success).length,
+        results: results
+      };
+      
+    } catch (error) {
+      console.error("❌ Error in fixAllCourseLessonCounts:", error);
+      throw new HttpsError("internal", error.message || "Failed to fix lesson counts");
+    }
+  }
+);

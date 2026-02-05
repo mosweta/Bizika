@@ -12,6 +12,8 @@ import {
   Filter,
   Menu,
   X,
+  Eye,
+  Plus,
   Download,
   MoreVertical
 } from "lucide-react";
@@ -100,7 +102,7 @@ export default function QuizManager() {
           studentsData.push({
             id: enrollment.userId,
             enrollmentId: enrollmentDoc.id,
-            name: userData.name || userData.email,
+            name: userData.fullName || userData.email,
             email: userData.email,
             progress: enrollment.progress || 0,
             completedLessons: enrollment.completedLessons?.length || 0,
@@ -154,15 +156,7 @@ export default function QuizManager() {
             </button>
           </div>
           
-          <div className={`${showMobileMenu || !isMobile ? 'flex' : 'hidden'} md:flex flex-col md:flex-row gap-3`}>
-            <button
-              onClick={() => navigate("/admin/create-quiz")}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2 text-sm md:text-base"
-            >
-              <FileText size={18} />
-              <span>Create New Quiz</span>
-            </button>
-          </div>
+          
         </div>
 
         {/* Course List */}
@@ -191,7 +185,7 @@ export default function QuizManager() {
                       </span>
                       <span className="flex items-center gap-1">
                         <BookOpen size={12} className="md:w-4 md:h-4" />
-                        <span>{course.lessons?.length || 0} lessons</span>
+                        <span>{course.lessonCount || 0} lessons</span>
                       </span>
                     </div>
                   </div>
@@ -200,17 +194,34 @@ export default function QuizManager() {
                   }`} />
                 </div>
                 
-                {!course.hasQuiz && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleCreateQuiz(course.id);
-                    }}
-                    className="mt-3 w-full px-3 py-1.5 text-xs md:text-sm bg-green-50 text-green-700 hover:bg-green-100 rounded-md"
-                  >
-                    Add Quiz
-                  </button>
-                )}
+               <div className="mt-3 flex gap-2">
+                  {course.hasQuiz ? (
+                    <>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleViewQuizResults(course.id);
+                        }}
+                        className="flex-1 px-3 py-1.5 text-xs md:text-sm bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-md flex items-center justify-center gap-1"
+                      >
+                        <Eye size={14} />
+                        View Results
+                      </button>
+                      
+                    </>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCreateQuiz(course.id);
+                      }}
+                      className="w-full px-3 py-1.5 text-xs md:text-sm bg-green-50 text-green-700 hover:bg-green-100 rounded-md flex items-center justify-center gap-1"
+                    >
+                      <Plus size={14} />
+                      Add Quiz
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

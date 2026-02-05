@@ -70,6 +70,31 @@ const getFileType = (filename) => {
   return FILE_ICONS[ext] ? ext : 'default';
 };
 
+// Helper function to calculate safe progress (never exceeds 100%)
+const calculateSafeProgress = (completedCount, totalLessons) => {
+  if (totalLessons === 0) return 0;
+  
+  const rawPercentage = (completedCount / totalLessons) * 100;
+  // Never return more than 100%
+  return Math.min(Math.round(rawPercentage * 100) / 100, 100);
+};
+
+// Safe Progress Badge Component
+const SafeProgressBadge = ({ enrollment, totalLessons }) => {
+  const completedCount = enrollment?.completedLessons?.length || 0;
+  const safePercentage = calculateSafeProgress(completedCount, totalLessons);
+  
+  return (
+    <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-800 rounded-full text-sm">
+      <CheckCircle className="h-4 w-4" />
+      <span>{safePercentage}% Complete</span>
+      <span className="text-xs opacity-75">
+        ({completedCount}/{totalLessons})
+      </span>
+    </div>
+  );
+};
+
 // Mobile-friendly Resource Card
 const ResourceCard = ({ resource, lessonTitle, onDownload, onPreview, downloading, isMobile = false }) => {
   const fileType = getFileType(resource.name || resource.originalName || '');
@@ -263,7 +288,7 @@ export default function CoursePage() {
     try {
       setLoading(true);
       
-      // 1. Fetch course document (enrolledCount comes from Cloud Function)
+      // 1. Fetch course document
       const courseDoc = await getDoc(doc(db, "courses", courseId));
       if (!courseDoc.exists()) {
         navigate("/courses");
@@ -294,9 +319,37 @@ export default function CoursePage() {
       
       if (!enrollmentSnap.empty) {
         const enrollmentDoc = enrollmentSnap.docs[0];
+        let enrollmentData = enrollmentDoc.data();
+        
+        // ✅ CRITICAL: Recalculate progress if total lessons changed
+        const currentTotalLessons = sortedLessons.length;
+        const completedCount = enrollmentData.completedLessons?.length || 0;
+        
+        // If user has 100% completion but total lessons changed, recalculate
+        let progressPercentage = enrollmentData.progress || 0;
+        
+        // Always recalculate based on current total lessons (safety check)
+        progressPercentage = calculateSafeProgress(completedCount, currentTotalLessons);
+        
+        // If stored progress is different from calculated, update it
+        if (enrollmentData.progress !== progressPercentage || 
+            enrollmentData.totalLessons !== currentTotalLessons) {
+          
+          // Update the enrollment record with recalculated progress
+          await updateDoc(enrollmentDoc.ref, {
+            progress: progressPercentage,
+            totalLessons: currentTotalLessons,
+            lastUpdated: serverTimestamp()
+          });
+          
+          console.log(`🔄 Progress recalculated: ${enrollmentData.progress || 0}% → ${progressPercentage}% (${completedCount}/${currentTotalLessons} lessons)`);
+        }
+        
         setEnrollment({
           id: enrollmentDoc.id,
-          ...enrollmentDoc.data()
+          ...enrollmentData,
+          progress: progressPercentage,
+          totalLessons: currentTotalLessons
         });
       }
 
@@ -317,7 +370,7 @@ export default function CoursePage() {
     }
   };
 
-  // UPDATED: Only marks lesson complete, doesn't advance to next
+  // Only marks lesson complete, doesn't advance to next
   const autoCompleteLesson = useCallback(async () => {
     if (!activeLesson || !enrollment) return;
 
@@ -339,13 +392,15 @@ export default function CoursePage() {
 
       const completedLessons = enrollment.completedLessons || [];
       const newCompletedLessons = [...completedLessons, activeLesson.id];
-      const progressPercentage = Math.round(
-        (newCompletedLessons.length / lessons.length) * 100
-      );
+      const currentTotalLessons = lessons.length;
+      
+      // ✅ Use safe progress calculation (never exceeds 100%)
+      const progressPercentage = calculateSafeProgress(newCompletedLessons.length, currentTotalLessons);
 
       await updateDoc(doc(db, "enrollments", enrollment.id), {
         completedLessons: newCompletedLessons,
         progress: progressPercentage,
+        totalLessons: currentTotalLessons, // Always update total lessons
         lastAccessed: serverTimestamp()
       });
 
@@ -354,7 +409,8 @@ export default function CoursePage() {
       setEnrollment(prev => ({
         ...prev,
         completedLessons: newCompletedLessons,
-        progress: progressPercentage
+        progress: progressPercentage,
+        totalLessons: currentTotalLessons
       }));
 
       // 🔄 NO auto-advance to next lesson - user stays on current video
@@ -372,7 +428,7 @@ export default function CoursePage() {
     }
   }, [activeLesson, enrollment, lessons]);
 
-  // NEW: Manual completion with optional next lesson navigation
+  // Manual completion with optional next lesson navigation
   const markCompleteAndGoNext = async () => {
     if (!activeLesson || !enrollment) return;
 
@@ -386,23 +442,26 @@ export default function CoursePage() {
 
       const completedLessons = enrollment.completedLessons || [];
       const newCompletedLessons = [...completedLessons, activeLesson.id];
-      const progressPercentage = Math.round(
-        (newCompletedLessons.length / lessons.length) * 100
-      );
+      const currentTotalLessons = lessons.length;
+      
+      // ✅ Use safe progress calculation (never exceeds 100%)
+      const progressPercentage = calculateSafeProgress(newCompletedLessons.length, currentTotalLessons);
 
       await updateDoc(doc(db, "enrollments", enrollment.id), {
         completedLessons: newCompletedLessons,
         progress: progressPercentage,
+        totalLessons: currentTotalLessons, // Always update total lessons
         lastAccessed: serverTimestamp()
       });
 
       setEnrollment(prev => ({
         ...prev,
         completedLessons: newCompletedLessons,
-        progress: progressPercentage
+        progress: progressPercentage,
+        totalLessons: currentTotalLessons
       }));
 
-      // 🔄 Optionally navigate to next lesson (uncomment if you want manual next navigation)
+      // Optional: Navigate to next lesson (uncomment if needed)
       /*
       const currentIndex = lessons.findIndex(l => l.id === activeLesson.id);
       const nextLesson = lessons[currentIndex + 1];
@@ -536,23 +595,34 @@ export default function CoursePage() {
   // Get all resources from all lessons
   const getAllResources = () => {
     const allResources = [];
+    const resourceMap = new Map();
     
     lessons.forEach(lesson => {
-      const resourceArrays = [
+      // Combine all resource arrays
+      const combinedResources = [
         ...(lesson.slides || []),
         ...(lesson.documents || []),
         ...(lesson.templates || []),
         ...(lesson.resources || [])
       ];
       
-      resourceArrays.forEach(resource => {
-        if (resource) {
-          allResources.push({
+      combinedResources.forEach(resource => {
+        if (!resource) return;
+        
+        const key = resource.key || resource.name || resource.originalName;
+        if (!key) return;
+        
+        // If we haven't seen this resource before, add it
+        if (!resourceMap.has(key)) {
+          const enhancedResource = {
             ...resource,
             lessonId: lesson.id,
             lessonTitle: lesson.title,
             lessonOrder: lesson.order
-          });
+          };
+          
+          resourceMap.set(key, enhancedResource);
+          allResources.push(enhancedResource);
         }
       });
     });
@@ -576,10 +646,16 @@ export default function CoursePage() {
       [lessonId]: Math.min(100, Math.max(0, progress))
     }));
 
-    
   }, [user, courseId]);
 
   const allResources = getAllResources();
+
+  // Helper function to get safe enrollment progress
+  const getSafeEnrollmentProgress = () => {
+    if (!enrollment) return 0;
+    const completedCount = enrollment.completedLessons?.length || 0;
+    return calculateSafeProgress(completedCount, lessons.length);
+  };
 
   // Update the lesson list to show progress bars
   const renderLessonList = () => {
@@ -594,6 +670,7 @@ export default function CoursePage() {
       ].filter(r => r);
       
       const lessonProgress = videoProgress[lesson.id] || 0;
+      const roundedProgress = Math.round(lessonProgress);
       
       return (
         <div
@@ -638,14 +715,14 @@ export default function CoursePage() {
                 <div className="mb-2">
                   <div className="flex justify-between text-xs text-gray-500 mb-0.5">
                     <span>Progress</span>
-                    <span>{lessonProgress}%</span>
+                    <span>{roundedProgress}%</span>
                   </div>
                   <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
                     <div 
                       className={`h-full ${
-                        lessonProgress >= 95 ? "bg-green-500" : 
-                        lessonProgress >= 50 ? "bg-blue-500" : 
-                        lessonProgress > 0 ? "bg-yellow-500" : "bg-gray-300"
+                        roundedProgress >= 95 ? "bg-green-500" : 
+                        roundedProgress >= 50 ? "bg-blue-500" : 
+                        roundedProgress > 0 ? "bg-yellow-500" : "bg-gray-300"
                       } rounded-full transition-all duration-300`}
                       style={{ width: `${lessonProgress}%` }}
                     ></div>
@@ -719,7 +796,7 @@ export default function CoursePage() {
               {enrollment && (
                 <div className="text-right">
                   <div className="text-sm font-medium text-gray-900">
-                    {enrollment.progress || 0}%
+                    {getSafeEnrollmentProgress()}%
                   </div>
                   <div className="text-xs text-gray-500">
                     {enrollment.completedLessons?.length || 0}/{lessons.length}
@@ -758,14 +835,10 @@ export default function CoursePage() {
             
             <div className="flex items-center gap-4">
               {enrollment && (
-                <div className="text-right">
-                  <div className="text-sm font-medium text-gray-900">
-                    Progress: {enrollment.progress || 0}%
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {enrollment.completedLessons?.length || 0} of {lessons.length} lessons
-                  </div>
-                </div>
+                <SafeProgressBadge 
+                  enrollment={enrollment} 
+                  totalLessons={lessons.length} 
+                />
               )}
             </div>
           </div>
@@ -800,7 +873,7 @@ export default function CoursePage() {
                   onQuestionAnswered={handleQuestionAnswered}
                   lessonId={activeLesson.id}
                   onProgressUpdate={handleVideoProgress}
-                  markLessonComplete={autoCompleteLesson} // UPDATED: Uses autoCompleteLesson (no auto-advance)
+                  markLessonComplete={autoCompleteLesson}
                   isLessonCompleted={enrollment?.completedLessons?.includes(activeLesson.id)}
                   isAutoCompleting={isAutoCompleting}
                   autoComplete={true}
@@ -817,7 +890,7 @@ export default function CoursePage() {
                   </div>
                   
                   <button
-                    onClick={() => markCompleteAndGoNext()} // UPDATED: Uses manual function
+                    onClick={() => markCompleteAndGoNext()}
                     disabled={enrollment?.completedLessons?.includes(activeLesson.id) || isAutoCompleting}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 text-sm md:text-base w-full sm:w-auto justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                   >
@@ -846,7 +919,7 @@ export default function CoursePage() {
                     <div className="flex items-center gap-2">
                       <CheckCircle className="h-4 w-4 text-green-600" />
                       <p className="text-sm text-green-700">
-                        Lesson marked as complete! You can continue watching or select the next lesson.
+                        Lesson marked as complete! You can select the next lesson to continue.
                       </p>
                     </div>
                   </div>
@@ -941,21 +1014,6 @@ export default function CoursePage() {
                         </div>
                         
                         <div className="flex items-center gap-2 self-end sm:self-center">
-                          {resource.viewable !== false && (
-                            <button
-                              onClick={() => handlePreviewResource(resource)}
-                              disabled={downloading === resource.key}
-                              className="px-3 py-1 text-sm bg-blue-50 text-blue-700 hover:bg-blue-100 rounded flex items-center gap-1 disabled:opacity-50"
-                            >
-                              {downloading === resource.key ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                <Eye size={12} />
-                              )}
-                              Preview
-                            </button>
-                          )}
-                          
                           {resource.downloadable !== false && (
                             <button
                               onClick={() => handleDownloadResource(resource)}
@@ -1035,7 +1093,7 @@ export default function CoursePage() {
                   <div className="font-semibold text-sm md:text-base">{lessons.length}</div>
                 </div>
                
-                  {/* Student count section - UPDATED */}
+                {/* Student count section */}
                 <div className="text-center p-3 bg-purple-50 rounded-lg">
                   <Users className="h-5 w-5 md:h-6 md:w-6 text-purple-600 mx-auto mb-2" />
                   <div className="text-xs md:text-sm text-gray-600">Students</div>
@@ -1097,12 +1155,12 @@ export default function CoursePage() {
                 <div>
                   <div className="flex justify-between text-sm text-gray-600 mb-1">
                     <span>Course Progress</span>
-                    <span>{enrollment?.progress || 0}%</span>
+                    <span>{getSafeEnrollmentProgress()}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                     <div 
                       className="h-full bg-green-600 rounded-full transition-all duration-300"
-                      style={{ width: `${enrollment?.progress || 0}%` }}
+                      style={{ width: `${getSafeEnrollmentProgress()}%` }}
                     ></div>
                   </div>
                 </div>

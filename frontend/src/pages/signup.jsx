@@ -14,7 +14,7 @@ import {
 import { useNavigate, Link } from "react-router-dom";
 
 // Cloudflare Worker URL (from your deployed worker)
-const CLOUDFLARE_WORKER_URL = import.meta.env.VITE_CLOUDFLARE_WORKER_URL || 'https://bizika-email-worker.your-username.workers.dev';
+const CLOUDFLARE_WORKER_URL ='http://127.0.0.1:8787'; // Local for testing
 
 export default function Signup({ onSignupSuccess }) {
   const navigate = useNavigate();
@@ -59,38 +59,41 @@ export default function Signup({ onSignupSuccess }) {
   }, [success, countdown, navigate, verificationEmailSent]);
 
   // Function to send custom email via Cloudflare Worker
-  const sendCustomVerificationEmail = async (email, name, userId) => {
-    try {
-      // Generate a verification link (in production, use Firebase Admin to generate proper link)
-      const verificationLink = `${window.location.origin}/emails?mode=verifyEmail&uid=${userId}&email=${encodeURIComponent(email)}`;
-      
-      const response = await fetch(CLOUDFLARE_WORKER_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          type: 'verification',
-          email: email,
-          name: name,
-          link: verificationLink
-        }),
-      });
+// In Signup.jsx - UPDATED
+const sendCustomVerificationEmail = async (email, name, userId) => {
+  try {
+    const frontendUrl = 'http://localhost:5173';
+    
+    // ✅ Use /emails route (matching your router)
+    const verificationLink = `${frontendUrl}/emails?mode=verifyEmail&uid=${userId}&email=${encodeURIComponent(email)}`;
+    
+    console.log('📧 Sending verification to /emails route:', verificationLink);
+    
+    const response = await fetch(`${CLOUDFLARE_WORKER_URL}/send-verification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        name: name,
+        verificationLink: verificationLink
+      }),
+    });
 
-      const result = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to send email');
-      }
-
-      setCustomEmailSent(true);
-      return { success: true, data: result };
-    } catch (error) {
-      console.error('Custom email error:', error);
-      setCustomEmailError(error.message);
-      return { success: false, error };
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(result.error || 'Failed to send email');
     }
-  };
+
+    setCustomEmailSent(true);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error('Custom email error:', error);
+    setCustomEmailError(error.message);
+    return { success: false, error };
+  }
+};
+
 
   const validateEmail = (email) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -356,11 +359,11 @@ export default function Signup({ onSignupSuccess }) {
                 <div className="flex items-center justify-center gap-2 mb-2">
                   <Sparkles className="h-4 w-4 text-blue-600" />
                   <span className="font-medium text-blue-800 text-sm">
-                    Beautiful verification email sent!
+                    Verification email sent!
                   </span>
                 </div>
                 <p className="text-blue-700 text-xs">
-                  Look for our branded email with the subject "Welcome to Pavoc LMS!"
+                  
                 </p>
               </div>
             )}
@@ -604,7 +607,7 @@ export default function Signup({ onSignupSuccess }) {
                       Professional Verification Emails
                     </h3>
                     <p className="text-xs md:text-sm text-blue-800">
-                      You'll receive a beautiful, branded verification email from Pavoc LMS.
+                      You'll receive a verification email from bizika b514f don't worry it's us.
                     </p>
                   </div>
                 </div>

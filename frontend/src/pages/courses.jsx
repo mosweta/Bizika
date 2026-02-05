@@ -1,6 +1,8 @@
+import { v4 as uuidv4 } from "uuid";
 // src/components/admin/CourseManager.jsx
 import { useState, useEffect, useRef } from "react";
-import { db, storage } from "../firebase/config";
+import { db, storage, auth } from "../firebase/config";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import {
   collection,
   addDoc,
@@ -10,7 +12,11 @@ import {
   serverTimestamp,
   doc,
   updateDoc,
-  deleteDoc
+  deleteDoc,
+  getDoc,
+  setDoc,
+  writeBatch,
+  where
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { 
@@ -35,11 +41,19 @@ import {
   Grid,
   List,
   Cloud,
-  ExternalLink
+  ExternalLink,
+  AlertCircle,
+  RefreshCw,
+  CheckCircle,
+  LogOut,
+  Shield,
+  User,
+  Video
 } from "lucide-react";
 
 // Import the correct R2Service
 import R2Service from "../services/r2service";
+
 
 // File type mapping
 const FILE_TYPES = {
@@ -78,11 +92,107 @@ const FileIcon = ({ type, className = "h-5 w-5" }) => {
   const IconComponent = FILE_TYPES[type]?.icon || File;
   return <IconComponent className={className} />;
 };
+// Helper function to validate video URLs
+const validateVideoUrl = (url) => {
+  if (!url) return { valid: true, type: null };
+  
+  // YouTube patterns
+  const youtubePatterns = [
+    /^https?:\/\/(www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/,
+    /^https?:\/\/(www\.)?youtu\.be\/([a-zA-Z0-9_-]+)/,
+    /^https?:\/\/(www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]+)/
+  ];
+  
+  // Vimeo patterns
+  const vimeoPatterns = [
+    /^https?:\/\/(www\.)?vimeo\.com\/([0-9]+)/,
+    /^https?:\/\/(www\.)?vimeo\.com\/\/([0-9]+)/
+  ];
+  
+  // Direct video file patterns
+  const videoFilePatterns = [
+    /^https?:\/\/.*\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i
+  ];
+  
+  for (const pattern of youtubePatterns) {
+    if (pattern.test(url)) return { valid: true, type: 'youtube' };
+  }
+  
+  for (const pattern of vimeoPatterns) {
+    if (pattern.test(url)) return { valid: true, type: 'vimeo' };
+  }
+  
+  for (const pattern of videoFilePatterns) {
+    if (pattern.test(url)) return { valid: true, type: 'direct' };
+  }
+  
+  // Allow other URLs but mark as other
+  if (url.startsWith('http')) {
+    return { valid: true, type: 'other' };
+  }
+  
+  return { valid: false, type: 'unknown' };
+};
+
+// Function to validate video URL (copied from ContentLibrary)
+const validateVideoUrlLocal = (url) => {
+  if (!url) return { valid: true, type: null };
+  
+  // YouTube patterns
+  const youtubePatterns = [
+    /^https?:\/\/(www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/,
+    /^https?:\/\/(www\.)?youtu\.be\/([a-zA-Z0-9_-]+)/,
+    /^https?:\/\/(www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]+)/
+  ];
+  
+  // Vimeo patterns
+  const vimeoPatterns = [
+    /^https?:\/\/(www\.)?vimeo\.com\/([0-9]+)/,
+    /^https?:\/\/(www\.)?vimeo\.com\/\/([0-9]+)/
+  ];
+  
+  // Direct video file patterns
+  const videoFilePatterns = [
+    /^https?:\/\/.*\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i
+  ];
+  
+  for (const pattern of youtubePatterns) {
+    if (pattern.test(url)) return { valid: true, type: 'youtube' };
+  }
+  
+  for (const pattern of vimeoPatterns) {
+    if (pattern.test(url)) return { valid: true, type: 'vimeo' };
+  }
+  
+  for (const pattern of videoFilePatterns) {
+    if (pattern.test(url)) return { valid: true, type: 'direct' };
+  }
+  
+  // Allow other URLs but mark as other
+  if (url.startsWith('http')) {
+    return { valid: true, type: 'other' };
+  }
+  
+  return { valid: false, type: 'unknown' };
+};
 
 export default function CourseManager() {
+  // Authentication states
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginForm, setLoginForm] = useState({
+    email: "",
+    password: ""
+  });
+
+  // Course management states
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [r2Loading, setR2Loading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showAddLessonModal, setShowAddLessonModal] = useState(false);
@@ -93,7 +203,56 @@ export default function CourseManager() {
   const [viewMode, setViewMode] = useState("list");
   const [mobileView, setMobileView] = useState(false);
   const [activeDownloading, setActiveDownloading] = useState(null);
+  const [failedUploads, setFailedUploads] = useState([]);
+  const [r2Error, setR2Error] = useState(null);
+  const [uploadQueue, setUploadQueue] = useState([]);
   const fileInputRef = useRef(null);
+
+  // Form states
+  const [courseForm, setCourseForm] = useState({
+    title: "",
+    description: "",
+    category: "",
+    price: 0,
+    isFree: true,
+    duration: "",
+    level: "beginner"
+  });
+
+ const [lessonForm, setLessonForm] = useState({
+  title: "",
+  description: "",
+  videoUrl: "",
+  duration: "",
+  isPublished: true,
+  slides: [],    // Add this
+  documents: [], // Add this
+  templates: []  // Add this
+});
+
+  const [courseImage, setCourseImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [editImage, setEditImage] = useState(null);
+  const [editImagePreview, setEditImagePreview] = useState(null);
+  
+  // New resource state
+  const [newResource, setNewResource] = useState({
+    name: "",
+    file: null,
+    type: "document",
+    category: "document",
+    description: "",
+    downloadable: true,
+    viewable: true
+  });
+
+  // Check R2 configuration
+  useEffect(() => {
+    if (!import.meta.env.VITE_R2_WORKER_URL) {
+      console.warn('R2 service URL not configured. File uploads will not work.');
+      setR2Error('R2 service is not configured. Please contact administrator.');
+    }
+  }, []);
 
   // Detect mobile view
   useEffect(() => {
@@ -109,49 +268,35 @@ export default function CourseManager() {
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Form states
-  const [courseForm, setCourseForm] = useState({
-    title: "",
-    description: "",
-    category: "",
-    price: 0,
-    isFree: true,
-    duration: "",
-    level: "beginner"
-  });
-
-  const [lessonForm, setLessonForm] = useState({
-    title: "",
-    description: "",
-    videoUrl: "",
-    videoType: "youtube",
-    duration: "",
-    slides: [],
-    documents: [],
-    templates: [],
-    resources: [],
-    order: 1
-  });
-
-  const [courseImage, setCourseImage] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [editImage, setEditImage] = useState(null);
-  const [editImagePreview, setEditImagePreview] = useState(null);
-  
-  // New resource state
- const [newResource, setNewResource] = useState({
-    name: "",
-    file: null,
-    type: "document",
-    category: "document",
-    description: "",
-    downloadable: true,
-    viewable: true
-  });
-
-  // Fetch courses on mount
+  // Authentication management
   useEffect(() => {
-    fetchCourses();
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setUser(user);
+      setIsAuthenticated(!!user);
+      
+      if (user) {
+        // Check if user has admin role in Firestore
+        try {
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          if (userDoc.exists() && userDoc.data().role === "admin") {
+            setIsAdmin(true);
+            fetchCourses(); // Fetch courses only when admin is authenticated
+          } else {
+            setIsAdmin(false);
+            console.log("User is not an admin");
+          }
+        } catch (error) {
+          console.error("Error checking admin status:", error);
+          setIsAdmin(false);
+        }
+      } else {
+        setIsAdmin(false);
+      }
+      
+      setAuthLoading(false);
+    });
+    
+    return () => unsubscribe();
   }, []);
 
   const fetchCourses = async () => {
@@ -173,6 +318,36 @@ export default function CourseManager() {
     }
   };
 
+  // Login handler
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    try {
+      setLoading(true);
+      await signInWithEmailAndPassword(auth, loginForm.email, loginForm.password);
+      setShowLoginModal(false);
+      setLoginForm({ email: "", password: "" });
+      alert("✅ Admin login successful!");
+    } catch (error) {
+      console.error("Login error:", error);
+      alert("Login failed. Please check credentials.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setIsAuthenticated(false);
+      setIsAdmin(false);
+      alert("Logged out successfully");
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
+
   // Simulate upload progress
   const simulateUploadProgress = () => {
     setUploadProgress(0);
@@ -188,29 +363,73 @@ export default function CourseManager() {
     return interval;
   };
 
-  // Handle file upload to R2
-  const handleFileUpload = async (file) => {
+  // Handle file upload to R2 with improved error handling
+  const handleFileUpload = async (file, metadata = {}) => {
     try {
-      // Upload to R2
-      const uploadedFile = await R2Service.uploadFile(file, 'course-resources');
+      const uploadOptions = {
+        folder: 'course-resources',
+        courseId: selectedCourse?.id || 'general',
+        metadata: {
+          type: getFileType(file.name),
+          originalName: file.name,
+          uploadedBy: user?.email || 'admin',
+          ...metadata
+        }
+      };
+
+      const result = await R2Service.uploadFile(file, uploadOptions);
       
+      if (!result.success) {
+        throw new Error(result.error || 'Upload failed');
+      }
+
       return {
-        url: uploadedFile.url,
-        key: uploadedFile.key,
-        name: uploadedFile.originalName,
-        fileName: uploadedFile.fileName,
-        size: uploadedFile.size,
-        type: uploadedFile.type,
-        uploadedAt: uploadedFile.uploadedAt,
-        publicUrl: uploadedFile.publicUrl,
+        url: result.data.urls?.cdn || result.data.url || result.data.publicUrl,
+        key: result.data.key,
+        name: result.data.originalName || file.name,
+        fileName: result.data.fileName,
+        size: result.data.size || R2Service.formatBytes(file.size),
+        type: result.data.type || getFileType(file.name),
+        uploadedAt: result.data.uploadedAt || new Date().toISOString(),
+        publicUrl: result.data.urls?.public || result.data.publicUrl,
+        cdnUrl: result.data.urls?.cdn,
+        downloadUrl: result.data.urls?.download,
+        originalName: result.data.originalName || file.name,
+        ...metadata
       };
     } catch (error) {
       console.error("Error uploading to R2:", error);
+      
+      const failedUpload = {
+        file,
+        metadata,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+      
+      setFailedUploads(prev => [...prev, failedUpload]);
       throw error;
     }
   };
 
-  // Add resource to lesson with R2 upload
+  // Retry failed uploads
+  const retryFailedUpload = async (failedUpload) => {
+    try {
+      setR2Loading(true);
+      setR2Error(null);
+      
+      const result = await handleFileUpload(failedUpload.file, failedUpload.metadata);
+      
+      setFailedUploads(prev => prev.filter(f => f !== failedUpload));
+      return result;
+    } catch (error) {
+      console.error("Retry failed:", error);
+      throw error;
+    } finally {
+      setR2Loading(false);
+    }
+  };
+
   // Add resource to lesson with R2 upload
   const handleAddResource = async () => {
     if (!newResource.name || !newResource.file) {
@@ -219,11 +438,19 @@ export default function CourseManager() {
     }
 
     try {
+      setR2Loading(true);
       setUploading(true);
+      setR2Error(null);
+      
       const progressInterval = simulateUploadProgress();
       
-      // Upload file to R2
-      const uploadedFile = await handleFileUpload(newResource.file);
+      const uploadedFile = await handleFileUpload(newResource.file, {
+        category: newResource.category,
+        description: newResource.description,
+        downloadable: newResource.downloadable,
+        viewable: newResource.viewable
+      });
+      
       clearInterval(progressInterval);
       setUploadProgress(100);
       
@@ -236,7 +463,6 @@ export default function CourseManager() {
         addedAt: new Date().toISOString()
       };
 
-      // Add to appropriate category
       const categoryKey = newResource.category === 'slides' ? 'slides' :
                          newResource.category === 'template' ? 'templates' : 'documents';
       
@@ -245,7 +471,6 @@ export default function CourseManager() {
         [categoryKey]: [...prev[categoryKey], resource]
       }));
 
-      // Reset form
       setNewResource({
         name: "",
         file: null,
@@ -265,8 +490,10 @@ export default function CourseManager() {
 
     } catch (error) {
       console.error("Error adding resource:", error);
+      setR2Error(`Failed to add resource: ${error.message}`);
       alert(`Failed to add resource: ${error.message}`);
     } finally {
+      setR2Loading(false);
       setUploading(false);
       setUploadProgress(0);
     }
@@ -276,18 +503,24 @@ export default function CourseManager() {
   const removeResource = async (category, index) => {
     const resource = lessonForm[category][index];
     
-    // Ask if user wants to delete from R2 as well
-    if (resource.key && window.confirm("Delete this file from Cloudflare R2 storage as well?")) {
+    if (!resource) return;
+    
+    const shouldDeleteFromR2 = resource.key && 
+      window.confirm("Delete this file from Cloudflare R2 storage as well?");
+    
+    if (shouldDeleteFromR2) {
       try {
+        setR2Loading(true);
         await R2Service.deleteFile(resource.key);
         console.log("✅ File deleted from R2");
       } catch (error) {
         console.error("Error deleting from R2:", error);
-        alert("File removed from list but could not delete from storage");
+        alert("File removed from list but could not delete from R2 storage");
+      } finally {
+        setR2Loading(false);
       }
     }
     
-    // Remove from local state
     setLessonForm(prev => ({
       ...prev,
       [category]: prev[category].filter((_, i) => i !== index)
@@ -299,18 +532,29 @@ export default function CourseManager() {
     return lessonForm.slides.length + lessonForm.documents.length + lessonForm.templates.length;
   };
 
-  // Download resource from R2 using the new service
+  // Download resource from R2
   const downloadResource = async (resource) => {
+    if (!resource) return;
+    
     try {
       setActiveDownloading(resource.key);
       
-      // Get signed URL from the new R2Service
-      const url = await R2Service.getSignedUrl(resource.key, 3600);
+      let url;
+      if (resource.key) {
+        url = await R2Service.getSignedUrl(resource.key, 3600);
+      } else if (resource.downloadUrl) {
+        url = resource.downloadUrl;
+      } else if (resource.url) {
+        url = resource.url;
+      } else if (resource.publicUrl) {
+        url = resource.publicUrl;
+      } else {
+        throw new Error('No valid URL found for resource');
+      }
       
-      // Trigger download
       const link = document.createElement('a');
       link.href = url;
-      link.download = resource.name || resource.originalName;
+      link.download = resource.name || resource.originalName || 'download';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -326,15 +570,26 @@ export default function CourseManager() {
     }
   };
 
-  // Preview resource (open in new tab) using the new service
+  // Preview resource
   const previewResource = async (resource) => {
+    if (!resource) return;
+    
     try {
       setActiveDownloading(resource.key);
       
-      // Get signed URL from the new R2Service
-      const url = await R2Service.getSignedUrl(resource.key, 3600);
+      let url;
+      if (resource.key) {
+        url = await R2Service.getSignedUrl(resource.key, 3600);
+      } else if (resource.url) {
+        url = resource.url;
+      } else if (resource.publicUrl) {
+        url = resource.publicUrl;
+      } else if (resource.cdnUrl) {
+        url = resource.cdnUrl;
+      } else {
+        throw new Error('No valid URL found for resource');
+      }
       
-      // Open in new tab
       window.open(url, '_blank');
       
       setTimeout(() => {
@@ -346,6 +601,14 @@ export default function CourseManager() {
       alert("Failed to preview file. Please try again.");
       setActiveDownloading(null);
     }
+  };
+
+  // Get URL for resource display
+  const getResourceUrl = (resource) => {
+    if (resource.url) return resource.url;
+    if (resource.publicUrl) return resource.publicUrl;
+    if (resource.cdnUrl) return resource.cdnUrl;
+    return null;
   };
 
   // Render resource list with R2 integration
@@ -361,81 +624,110 @@ export default function CourseManager() {
 
     return (
       <div className="space-y-2">
-        {resources.map((resource, index) => (
-          <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-            <div className="flex items-center gap-3 flex-1 min-w-0">
-              <div className={`p-2 rounded ${FILE_TYPES[resource.type]?.bgColor || 'bg-gray-100'}`}>
-                <FileIcon type={resource.type} className="h-4 w-4" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="text-sm font-medium text-gray-900 truncate">
-                    {resource.name || resource.originalName}
-                  </p>
-                  {resource.key && (
-                    <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full flex items-center gap-1">
-                      <Cloud size={10} />
-                      <span className="hidden sm:inline">R2</span>
-                    </span>
+        {resources.map((resource, index) => {
+          const fileType = resource.type || getFileType(resource.name || resource.originalName || '');
+          const resourceUrl = getResourceUrl(resource);
+          
+          return (
+            <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className={`p-2 rounded ${FILE_TYPES[fileType]?.bgColor || 'bg-gray-100'}`}>
+                  <FileIcon type={fileType} className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {resource.name || resource.originalName || 'Unnamed Resource'}
+                    </p>
+                    {resource.key && (
+                      <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full flex items-center gap-1">
+                        <Cloud size={10} />
+                        <span className="hidden sm:inline">R2</span>
+                      </span>
+                    )}
+                    {resource.error && (
+                      <span className="px-1.5 py-0.5 bg-red-100 text-red-700 text-xs rounded-full flex items-center gap-1">
+                        <AlertCircle size={10} />
+                        Error
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                    <span className="capitalize">{resource.category || category}</span>
+                    <span>•</span>
+                    <span>{(resource.type || '').split('/')[0]?.toUpperCase() || fileType.toUpperCase()}</span>
+                    <span>•</span>
+                    <span>{resource.size || 'Unknown size'}</span>
+                  </div>
+                  {resource.description && (
+                    <p className="text-xs text-gray-600 mt-1 truncate">{resource.description}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
-                  <span className="capitalize">{resource.category}</span>
-                  <span>•</span>
-                  <span>{resource.type?.toUpperCase() || 'FILE'}</span>
-                  <span>•</span>
-                  <span>{resource.size}</span>
-                </div>
-                {resource.description && (
-                  <p className="text-xs text-gray-600 mt-1 truncate">{resource.description}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {resource.error ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Retry uploading this file?')) {
+                        retryFailedUpload(resource);
+                      }
+                    }}
+                    className="px-3 py-1 text-sm bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200 flex items-center gap-1"
+                    title="Retry upload"
+                  >
+                    <RefreshCw size={12} />
+                    <span className="hidden sm:inline">Retry</span>
+                  </button>
+                ) : (
+                  <>
+                    {resource.viewable !== false && resourceUrl && (
+                      <button
+                        type="button"
+                        onClick={() => previewResource(resource)}
+                        disabled={activeDownloading === resource.key}
+                        className="px-3 py-1 text-sm bg-green-100 text-green-700 rounded hover:bg-green-200 flex items-center gap-1 disabled:opacity-50"
+                        title="Preview"
+                      >
+                        {activeDownloading === resource.key ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <ExternalLink size={12} />
+                        )}
+                        <span className="hidden sm:inline">Preview</span>
+                      </button>
+                    )}
+                    {resource.downloadable !== false && (
+                      <button
+                        type="button"
+                        onClick={() => downloadResource(resource)}
+                        disabled={activeDownloading === resource.key}
+                        className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 flex items-center gap-1 disabled:opacity-50"
+                        title="Download from Cloudflare R2"
+                      >
+                        {activeDownloading === resource.key ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Download size={12} />
+                        )}
+                        <span className="hidden sm:inline">Download</span>
+                      </button>
+                    )}
+                  </>
                 )}
+                <button
+                  type="button"
+                  onClick={() => removeResource(category, index)}
+                  className="ml-2 p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors"
+                  aria-label={`Remove ${resource.name}`}
+                  title="Delete"
+                >
+                  <X size={14} />
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {resource.viewable !== false && (
-                <button
-                  type="button"
-                  onClick={() => previewResource(resource)}
-                  disabled={activeDownloading === resource.key}
-                  className="px-3 py-1 text-sm bg-green-100 text-green-700 rounded hover:bg-green-200 flex items-center gap-1 disabled:opacity-50"
-                  title="Preview"
-                >
-                  {activeDownloading === resource.key ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <ExternalLink size={12} />
-                  )}
-                  <span className="hidden sm:inline">Preview</span>
-                </button>
-              )}
-              {resource.downloadable !== false && (
-                <button
-                  type="button"
-                  onClick={() => downloadResource(resource)}
-                  disabled={activeDownloading === resource.key}
-                  className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 flex items-center gap-1 disabled:opacity-50"
-                  title="Download from Cloudflare R2"
-                >
-                  {activeDownloading === resource.key ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Download size={12} />
-                  )}
-                  <span className="hidden sm:inline">Download</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => removeResource(category, index)}
-                className="ml-2 p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors"
-                aria-label={`Remove ${resource.name}`}
-                title="Delete"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   };
@@ -491,7 +783,6 @@ export default function CourseManager() {
     if (!imageFile) return null;
 
     try {
-      // Upload to Firebase Storage (for thumbnails)
       const timestamp = Date.now();
       const storagePath = `courses/${courseId}/thumbnail_${timestamp}.jpg`;
       const storageRef = ref(storage, storagePath);
@@ -508,6 +799,19 @@ export default function CourseManager() {
 
   const handleCreateCourse = async (e) => {
     e.preventDefault();
+    
+    // Debug logging
+    console.log("Creating course...");
+    console.log("Current user:", auth.currentUser);
+    console.log("Is authenticated:", isAuthenticated);
+    console.log("Is admin:", isAdmin);
+    
+    if (!isAuthenticated || !isAdmin) {
+      alert("You must be logged in as an admin to create courses");
+      setShowLoginModal(true);
+      return;
+    }
+
     if (loading || uploading) return;
 
     if (!courseImage) {
@@ -526,7 +830,9 @@ export default function CourseManager() {
         enrolledCount: 0,
         lessonCount: 0,
         rating: 0,
-        status: "draft"
+        status: "draft",
+        createdBy: user.uid,
+        createdByEmail: user.email
       };
 
       const courseRef = await addDoc(collection(db, "courses"), courseData);
@@ -561,64 +867,165 @@ export default function CourseManager() {
     }
   };
 
+  // =============================================
+  // UPDATED: handleAddLesson function (using ContentLibrary approach)
+  // =============================================
   const handleAddLesson = async (e) => {
-    e.preventDefault();
-    if (!selectedCourse || loading) return;
+  e.preventDefault();
+  
+  console.log("=== DEBUG: Adding Lesson (ContentLibrary approach) ===");
+  console.log("User:", auth.currentUser?.email);
+  console.log("User UID:", auth.currentUser?.uid);
+  console.log("Is authenticated?", !!auth.currentUser);
+  
+  if (!selectedCourse || !lessonForm.title.trim()) {
+    alert("Please fill in lesson title");
+    return;
+  }
 
+  // Validate video URL if provided
+  if (lessonForm.videoUrl) {
+    const validation = validateVideoUrlLocal(lessonForm.videoUrl);
+    if (!validation.valid) {
+      alert("Please enter a valid YouTube, Vimeo, or direct video URL");
+      return;
+    }
+  }
+
+  try {
+    setLoading(true);
+    // REMOVE THIS LINE: setError(null);
+    
+    const lessonId = uuidv4();
+    const courseId = selectedCourse.id;
+    
+    // Determine video type
+    let videoType = "youtube"; // default
+    if (lessonForm.videoUrl) {
+      const validation = validateVideoUrlLocal(lessonForm.videoUrl);
+      videoType = validation.type || "other";
+    }
+    
+    // Prepare lesson data - SIMPLIFIED like ContentLibrary
+    const newLesson = {
+      id: lessonId,
+      title: lessonForm.title,
+      description: lessonForm.description || "",
+      videoUrl: lessonForm.videoUrl || "",
+      videoType: videoType,
+      duration: lessonForm.duration || "0 min",
+      isPublished: lessonForm.isPublished !== false,
+      order: selectedCourse.lessonCount || 0, // Use existing lesson count
+      createdAt: new Date().toISOString(),
+      // Include resources if they exist
+      resources: [
+        ...(lessonForm.slides || []),
+        ...(lessonForm.documents || []),
+        ...(lessonForm.templates || [])
+      ].map(r => ({
+        ...r,
+        storageType: 'r2'
+      }))
+    };
+
+    console.log("Attempting to write lesson to Firestore...");
+    console.log("Path: courses/", courseId, "/lessons");
+    console.log("Lesson data:", JSON.stringify(newLesson, null, 2));
+    
+    // Use setDoc instead of addDoc for more control
+    const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
+    await setDoc(lessonRef, newLesson);
+    
+    console.log("✅ Lesson added! Document ID:", lessonId);
+
+    // Update course lesson count
+    const courseRef = doc(db, "courses", courseId);
+    await updateDoc(courseRef, {
+      lessonCount: (selectedCourse.lessonCount || 0) + 1,
+      updatedAt: serverTimestamp()
+    });
+
+    // ✅ CRITICAL: Update all enrollments' totalLessons
+    await updateAllEnrollmentsForCourse(courseId);
+
+    alert("✅ Lesson added successfully!");
+    setShowAddLessonModal(false);
+    resetLessonForm();
+    fetchCourses();
+    
+  } catch (error) {
+    console.error("❌ Error adding lesson:", error);
+    console.error("Error code:", error.code);
+    console.error("Error message:", error.message);
+    
+    if (error.code === 'permission-denied') {
+      alert("Permission denied by Firestore. Check:\n1. Firestore rules\n2. User authentication\n3. Admin role in users collection");
+    } else {
+      alert("Error adding lesson: " + error.message);
+    }
+  } finally {
+    setLoading(false);
+  }
+};
+
+  // =============================================
+  // ADD THIS FUNCTION: Update all enrollments for a course
+  // =============================================
+  const updateAllEnrollmentsForCourse = async (courseId) => {
     try {
-      setLoading(true);
-
-      const lessonData = {
-        title: lessonForm.title,
-        description: lessonForm.description,
-        videoUrl: lessonForm.videoUrl,
-        videoType: lessonForm.videoType,
-        duration: lessonForm.duration,
-        order: lessonForm.order,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        isPublished: true,
-        slides: lessonForm.slides.map(r => ({
-          ...r,
-          storageType: 'r2'
-        })),
-        documents: lessonForm.documents.map(r => ({
-          ...r,
-          storageType: 'r2'
-        })),
-        templates: lessonForm.templates.map(r => ({
-          ...r,
-          storageType: 'r2'
-        })),
-        resources: [
-          ...lessonForm.slides.map(r => ({ ...r, storageType: 'r2' })),
-          ...lessonForm.documents.map(r => ({ ...r, storageType: 'r2' })),
-          ...lessonForm.templates.map(r => ({ ...r, storageType: 'r2' }))
-        ]
-      };
-
-      const lessonsRef = collection(db, "courses", selectedCourse.id, "lessons");
-      await addDoc(lessonsRef, lessonData);
-
-      const courseRef = doc(db, "courses", selectedCourse.id);
-      await updateDoc(courseRef, {
-        lessonCount: selectedCourse.lessonCount + 1,
-        updatedAt: serverTimestamp()
+      // Get current total lessons
+      const lessonsRef = collection(db, "courses", courseId, "lessons");
+      const lessonsSnapshot = await getDocs(lessonsRef);
+      const currentTotalLessons = lessonsSnapshot.size;
+      
+      // Get all enrollments for this course
+      const enrollmentsRef = collection(db, "enrollments");
+      const enrollmentsQuery = query(enrollmentsRef, where("courseId", "==", courseId));
+      const enrollmentsSnapshot = await getDocs(enrollmentsQuery);
+      
+      if (enrollmentsSnapshot.empty) {
+        console.log("No enrollments to update for course:", courseId);
+        return;
+      }
+      
+      console.log(`Updating ${enrollmentsSnapshot.size} enrollments for course ${courseId}`);
+      
+      // Batch update all enrollments
+      const batch = writeBatch(db);
+      
+      enrollmentsSnapshot.docs.forEach(enrollmentDoc => {
+        const enrollmentData = enrollmentDoc.data();
+        const completedCount = enrollmentData.completedLessons?.length || 0;
+        
+        // Recalculate progress with new total (never exceed 100%)
+        const newProgress = Math.min(
+          Math.round((completedCount / currentTotalLessons) * 100),
+          100
+        );
+        
+        batch.update(enrollmentDoc.ref, {
+          totalLessons: currentTotalLessons,
+          progress: newProgress,
+          updatedAt: serverTimestamp()
+        });
       });
-
-      alert("✅ Lesson added successfully with R2 resources!");
-      setShowAddLessonModal(false);
-      resetLessonForm();
-      fetchCourses();
+      
+      await batch.commit();
+      console.log("✅ All enrollments updated with new total lessons:", currentTotalLessons);
+      
     } catch (error) {
-      console.error("Error adding lesson:", error);
-      alert("Error adding lesson. Please try again.");
-    } finally {
-      setLoading(false);
+      console.error("Error updating enrollments:", error);
+      // Don't throw - we don't want to fail lesson creation if enrollment update fails
     }
   };
 
   const togglePublishCourse = async (course) => {
+    if (!isAuthenticated || !isAdmin) {
+      alert("You must be logged in as an admin to publish courses");
+      setShowLoginModal(true);
+      return;
+    }
+
     if (loading) return;
 
     if (!course.thumbnailUrl && !course.published) {
@@ -633,7 +1040,9 @@ export default function CourseManager() {
       await updateDoc(courseRef, {
         published: !course.published,
         status: !course.published ? "published" : "draft",
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        updatedBy: user.uid,
+        updatedByEmail: user.email
       });
       
       alert(`Course ${!course.published ? 'published' : 'unpublished'} successfully!`);
@@ -647,6 +1056,12 @@ export default function CourseManager() {
   };
 
   const updateCourseThumbnail = async () => {
+    if (!isAuthenticated || !isAdmin) {
+      alert("You must be logged in as an admin to update thumbnails");
+      setShowLoginModal(true);
+      return;
+    }
+
     if (!editingCourse || !editImage || loading) return;
 
     try {
@@ -657,7 +1072,9 @@ export default function CourseManager() {
       const courseRef = doc(db, "courses", editingCourse.id);
       await updateDoc(courseRef, {
         thumbnailUrl: newThumbnailUrl,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        updatedBy: user.uid,
+        updatedByEmail: user.email
       });
       
       alert("✅ Thumbnail updated successfully!");
@@ -673,7 +1090,14 @@ export default function CourseManager() {
     }
   };
 
+  // Enhanced course deletion with R2 cleanup
   const deleteCourse = async (courseId) => {
+    if (!isAuthenticated || !isAdmin) {
+      alert("You must be logged in as an admin to delete courses");
+      setShowLoginModal(true);
+      return;
+    }
+
     if (loading) return;
 
     if (!confirm("Are you sure you want to delete this course? This action cannot be undone and will delete all associated resources from Cloudflare R2.")) {
@@ -683,16 +1107,29 @@ export default function CourseManager() {
     try {
       setLoading(true);
       
-      // Optionally clean up R2 resources first
-      if (window.confirm("Also delete all associated files from Cloudflare R2 storage?")) {
-        try {
-          // Note: You'll need to create a cleanup function in your R2Service
-          // For now, this will just delete the course from Firestore
-          console.log("R2 cleanup would happen here");
-        } catch (cleanupError) {
-          console.error("Error cleaning up R2 resources:", cleanupError);
-          // Continue with course deletion even if cleanup fails
+      // Get all resources for this course from R2
+      try {
+        const files = await R2Service.listFiles({ 
+          prefix: `course-resources/${courseId}/` 
+        });
+        
+        if (files.length > 0) {
+          const shouldDelete = window.confirm(`This course has ${files.length} files in Cloudflare R2. Delete them as well?`);
+          
+          if (shouldDelete) {
+            const keys = files.map(f => f.key).filter(Boolean);
+            if (keys.length > 0) {
+              const deleteResult = await R2Service.batchDeleteFiles(keys);
+              console.log(`Deleted ${deleteResult.successful}/${deleteResult.total} files from R2`);
+              if (deleteResult.failed > 0) {
+                console.warn('Some files failed to delete:', deleteResult.errors);
+              }
+            }
+          }
         }
+      } catch (r2Error) {
+        console.error("Error cleaning up R2 resources:", r2Error);
+        // Continue with course deletion even if cleanup fails
       }
       
       // Delete course from Firestore
@@ -723,30 +1160,29 @@ export default function CourseManager() {
     setImagePreview(null);
   };
 
-  const resetLessonForm = () => {
-    setLessonForm({
-      title: "",
-      description: "",
-      videoUrl: "",
-      videoType: "youtube",
-      duration: "",
-      slides: [],
-      documents: [],
-      templates: [],
-      resources: [],
-      order: 1
-    });
-    setNewResource({
-      name: "",
-      file: null,
-      type: "document",
-      category: "document",
-      description: "",
-      downloadable: true,
-      viewable: true
-    });
-    setUploadProgress(0);
-  };
+const resetLessonForm = () => {
+  setLessonForm({
+    title: "",
+    description: "",
+    videoUrl: "",
+    duration: "",
+    isPublished: true,
+    slides: [],    // Add these
+    documents: [], // Add these
+    templates: []  // Add these
+  });
+  setNewResource({
+    name: "",
+    file: null,
+    type: "document",
+    category: "document",
+    description: "",
+    downloadable: true,
+    viewable: true
+  });
+  setUploadProgress(0);
+  setR2Error(null);
+};
 
   const resetEditForm = () => {
     setEditingCourse(null);
@@ -767,13 +1203,201 @@ export default function CourseManager() {
     return colors[category] || "bg-gray-100 text-gray-800";
   };
 
+  // Clear R2 error
+  const clearR2Error = () => {
+    setR2Error(null);
+  };
+
+  // Clear failed uploads
+  const clearFailedUploads = () => {
+    setFailedUploads([]);
+  };
+
+  // ========== AUTHENTICATION COMPONENTS ==========
+
+  // Show loading state
+  if (authLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600 mb-4" />
+        <p className="text-gray-600">Checking authentication...</p>
+      </div>
+    );
+  }
+
+  // Show login required if not authenticated or not admin
+  if (!isAuthenticated || !isAdmin) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-4">
+        <div className="max-w-md mx-auto mt-12">
+          <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+            <div className="p-8">
+              <div className="text-center mb-8">
+                <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
+                  <Shield className="h-8 w-8 text-blue-600" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">
+                  {!isAuthenticated ? "Admin Login Required" : "Admin Access Required"}
+                </h2>
+                <p className="text-gray-600">
+                  {!isAuthenticated 
+                    ? "Please login with admin credentials to access the course management panel."
+                    : "Your account doesn't have admin permissions. Please login with an admin account."
+                  }
+                </p>
+              </div>
+
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={loginForm.email}
+                    onChange={(e) => setLoginForm({...loginForm, email: e.target.value})}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    placeholder="admin@example.com"
+                    required
+                    disabled={loading}
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    placeholder="••••••••"
+                    required
+                    disabled={loading}
+                  />
+                </div>
+                
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                      Logging in...
+                    </>
+                  ) : (
+                    "Login as Admin"
+                  )}
+                </button>
+              </form>
+
+              <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+                <p className="text-sm text-blue-800 font-medium mb-1">Demo Admin Credentials:</p>
+                <p className="text-sm text-blue-700">Email: admin@example.com</p>
+                <p className="text-sm text-blue-700">Password: admin123</p>
+                <p className="text-xs text-blue-600 mt-2">
+                  If these don't work, contact system administrator to create an admin account.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ========== MAIN ADMIN INTERFACE ==========
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Error Display */}
+      {r2Error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 text-red-600" />
+            <div>
+              <p className="text-red-700 font-medium">R2 Storage Error</p>
+              <p className="text-red-600 text-sm">{r2Error}</p>
+            </div>
+          </div>
+          <button 
+            onClick={clearR2Error}
+            className="p-1 hover:bg-red-100 rounded"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Failed Uploads Display */}
+      {failedUploads.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-yellow-600" />
+              <p className="text-yellow-800 font-medium">
+                {failedUploads.length} failed upload(s)
+              </p>
+            </div>
+            <button 
+              onClick={clearFailedUploads}
+              className="text-xs text-yellow-700 hover:text-yellow-900 flex items-center gap-1"
+            >
+              <X size={12} />
+              Clear All
+            </button>
+          </div>
+          <div className="space-y-2">
+            {failedUploads.slice(0, 3).map((upload, index) => (
+              <div key={index} className="text-sm text-yellow-700 flex items-center justify-between">
+                <span className="truncate">{upload.file.name}</span>
+                <button
+                  onClick={() => retryFailedUpload(upload)}
+                  className="text-xs px-2 py-1 bg-yellow-100 text-yellow-800 rounded hover:bg-yellow-200 flex items-center gap-1"
+                >
+                  <RefreshCw size={10} />
+                  Retry
+                </button>
+              </div>
+            ))}
+            {failedUploads.length > 3 && (
+              <p className="text-xs text-yellow-600">
+                + {failedUploads.length - 3} more failed uploads
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Header with Admin Info */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">Course Management</h3>
-          <p className="text-sm text-gray-600">Create and manage your courses with Cloudflare R2 storage</p>
+          <div className="flex items-center gap-2 mb-1">
+            <h3 className="text-lg font-semibold text-gray-900">Course Management</h3>
+            <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full flex items-center gap-1">
+              <Shield size={10} />
+              Admin Mode
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
+                <User className="h-3 w-3 text-blue-600" />
+              </div>
+              <p className="text-sm text-gray-600 truncate max-w-[200px]">
+                {user?.email}
+              </p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50 px-2 py-1 rounded flex items-center gap-1"
+            >
+              <LogOut size={12} />
+              Logout
+            </button>
+          </div>
         </div>
         
         <div className="flex items-center gap-3">
@@ -781,14 +1405,14 @@ export default function CourseManager() {
             <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
               <button
                 onClick={() => setViewMode("list")}
-                className={`p-2 rounded ${viewMode === "list" ? "bg-white shadow" : "hover:bg-gray-200"}`}
+                className={`p-2 rounded transition-colors ${viewMode === "list" ? "bg-white shadow" : "hover:bg-gray-200"}`}
                 title="List View"
               >
                 <List size={16} />
               </button>
               <button
                 onClick={() => setViewMode("grid")}
-                className={`p-2 rounded ${viewMode === "grid" ? "bg-white shadow" : "hover:bg-gray-200"}`}
+                className={`p-2 rounded transition-colors ${viewMode === "grid" ? "bg-white shadow" : "hover:bg-gray-200"}`}
                 title="Grid View"
               >
                 <Grid size={16} />
@@ -799,7 +1423,7 @@ export default function CourseManager() {
           <button
             onClick={() => setShowCreateModal(true)}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 transition-colors disabled:opacity-50"
-            disabled={loading}
+            disabled={loading || r2Loading}
           >
             <Plus size={20} />
             <span className="hidden sm:inline">Create Course</span>
@@ -815,11 +1439,19 @@ export default function CourseManager() {
             <Cloud className="h-6 w-6 text-blue-600" />
             <div>
               <h4 className="font-medium text-gray-900">Cloudflare R2 Storage</h4>
-              <p className="text-sm text-gray-600">Course resources are stored securely in Cloudflare R2</p>
+              <p className="text-sm text-gray-600">
+                {import.meta.env.VITE_R2_WORKER_URL 
+                  ? "Course resources are stored securely in Cloudflare R2" 
+                  : "R2 service not configured. File uploads will not work."}
+              </p>
             </div>
           </div>
-          <span className="px-3 py-1 bg-blue-100 text-blue-800 text-sm font-medium rounded-full">
-            Active
+          <span className={`px-3 py-1 text-sm font-medium rounded-full ${
+            import.meta.env.VITE_R2_WORKER_URL 
+              ? "bg-blue-100 text-blue-800" 
+              : "bg-yellow-100 text-yellow-800"
+          }`}>
+            {import.meta.env.VITE_R2_WORKER_URL ? "Active" : "Not Configured"}
           </span>
         </div>
       </div>
@@ -867,6 +1499,7 @@ export default function CourseManager() {
               <button
                 onClick={() => setShowCreateModal(true)}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 mx-auto"
+                disabled={r2Loading}
               >
                 <Plus size={16} />
                 Create Course
@@ -919,6 +1552,7 @@ export default function CourseManager() {
                         onClick={() => togglePublishCourse(course)}
                         className="p-1.5 hover:bg-gray-100 rounded transition-colors"
                         title={course.published ? "Unpublish" : "Publish"}
+                        disabled={r2Loading}
                       >
                         {course.published ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
@@ -929,6 +1563,7 @@ export default function CourseManager() {
                         }}
                         className="p-1.5 hover:bg-gray-100 rounded transition-colors"
                         title="Add Lesson"
+                        disabled={r2Loading}
                       >
                         <Plus size={16} />
                       </button>
@@ -942,6 +1577,7 @@ export default function CourseManager() {
                         }}
                         className="p-1.5 hover:bg-gray-100 rounded transition-colors"
                         title="Edit"
+                        disabled={r2Loading}
                       >
                         <Edit2 size={16} />
                       </button>
@@ -949,6 +1585,7 @@ export default function CourseManager() {
                         onClick={() => deleteCourse(course.id)}
                         className="p-1.5 hover:bg-red-50 hover:text-red-600 rounded transition-colors"
                         title="Delete"
+                        disabled={r2Loading}
                       >
                         <Trash2 size={16} />
                       </button>
@@ -1006,6 +1643,7 @@ export default function CourseManager() {
                         <button
                           onClick={() => setShowCreateModal(true)}
                           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                          disabled={r2Loading}
                         >
                           <Plus size={16} />
                           Create Course
@@ -1070,6 +1708,7 @@ export default function CourseManager() {
                             onClick={() => togglePublishCourse(course)}
                             className="p-1.5 hover:bg-gray-100 rounded transition-colors"
                             title={course.published ? "Unpublish" : "Publish"}
+                            disabled={r2Loading}
                           >
                             {course.published ? <EyeOff size={14} /> : <Eye size={14} />}
                           </button>
@@ -1080,6 +1719,7 @@ export default function CourseManager() {
                             }}
                             className="p-1.5 hover:bg-gray-100 rounded transition-colors"
                             title="Add Lesson"
+                            disabled={r2Loading}
                           >
                             <Plus size={14} />
                           </button>
@@ -1090,6 +1730,7 @@ export default function CourseManager() {
                             }}
                             className="p-1.5 hover:bg-gray-100 rounded transition-colors"
                             title="Edit"
+                            disabled={r2Loading}
                           >
                             <Edit2 size={14} />
                           </button>
@@ -1097,6 +1738,7 @@ export default function CourseManager() {
                             onClick={() => deleteCourse(course.id)}
                             className="p-1.5 hover:bg-red-50 hover:text-red-600 rounded transition-colors"
                             title="Delete"
+                            disabled={r2Loading}
                           >
                             <Trash2 size={14} />
                           </button>
@@ -1127,11 +1769,20 @@ export default function CourseManager() {
                     resetLessonForm();
                   }}
                   className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                  disabled={loading}
+                  disabled={loading || r2Loading}
                 >
                   <X size={20} />
                 </button>
               </div>
+
+              {r2Error && (
+                <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-600" />
+                    <p className="text-sm text-red-700">{r2Error}</p>
+                  </div>
+                </div>
+              )}
 
               <form onSubmit={handleAddLesson} className="space-y-6">
                 {/* Basic Info */}
@@ -1147,7 +1798,7 @@ export default function CourseManager() {
                       onChange={(e) => setLessonForm({...lessonForm, title: e.target.value})}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder="Introduction to Marketing"
-                      disabled={loading}
+                      disabled={loading || r2Loading}
                     />
                   </div>
                   
@@ -1161,7 +1812,7 @@ export default function CourseManager() {
                       onChange={(e) => setLessonForm({...lessonForm, duration: e.target.value})}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder="45 minutes"
-                      disabled={loading}
+                      disabled={loading || r2Loading}
                     />
                   </div>
                 </div>
@@ -1177,7 +1828,7 @@ export default function CourseManager() {
                     rows={3}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="What will students learn in this lesson?"
-                    disabled={loading}
+                    disabled={loading || r2Loading}
                   />
                 </div>
 
@@ -1191,17 +1842,21 @@ export default function CourseManager() {
                   <div className="space-y-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Video URL *
+                        Video URL (Optional)
+                        <span className="text-xs text-gray-500 ml-1">YouTube, Vimeo, or direct video link</span>
                       </label>
                       <input
                         type="url"
-                        required
                         value={lessonForm.videoUrl}
                         onChange={(e) => setLessonForm({...lessonForm, videoUrl: e.target.value})}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="https://www.youtube.com/watch?v=..."
-                        disabled={loading}
+                        placeholder="https://www.youtube.com/watch?v=... or https://vimeo.com/..."
+                        disabled={loading || r2Loading}
                       />
+                      <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+                        <Video className="h-3 w-3" />
+                        <span>Supports YouTube, Vimeo, or direct MP4/WebM links</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1243,6 +1898,7 @@ export default function CourseManager() {
                                   ? 'bg-blue-100 border-blue-500 text-blue-700' 
                                   : 'border-gray-300 hover:bg-gray-50'
                               }`}
+                              disabled={r2Loading}
                             >
                               {type.charAt(0).toUpperCase() + type.slice(1)}
                             </button>
@@ -1261,7 +1917,7 @@ export default function CourseManager() {
                           onChange={(e) => setNewResource({...newResource, name: e.target.value})}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                           placeholder="e.g., Marketing Strategy Template"
-                          disabled={uploading}
+                          disabled={r2Loading}
                         />
                       </div>
 
@@ -1270,8 +1926,14 @@ export default function CourseManager() {
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           File Upload *
                         </label>
-                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-blue-400 transition-colors">
-                          {uploading ? (
+                        <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+                          r2Loading 
+                            ? 'border-blue-300 bg-blue-50' 
+                            : newResource.file 
+                            ? 'border-green-300 bg-green-50' 
+                            : 'border-gray-300 hover:border-blue-400'
+                        }`}>
+                          {r2Loading ? (
                             <div className="py-4">
                               <Loader2 className="h-6 w-6 text-blue-600 animate-spin mx-auto mb-2" />
                               <p className="text-sm text-gray-600">Uploading to Cloudflare R2...</p>
@@ -1311,12 +1973,14 @@ export default function CourseManager() {
                                     if (fileInputRef.current) fileInputRef.current.value = '';
                                   }}
                                   className="text-red-600 hover:text-red-800"
+                                  disabled={r2Loading}
                                 >
                                   <X size={16} />
                                 </button>
                               </div>
-                              <p className="text-xs text-green-600">
-                                ✓ File ready to upload to Cloudflare R2
+                              <p className="text-xs text-green-600 flex items-center gap-1">
+                                <CheckCircle size={12} />
+                                File ready to upload to Cloudflare R2
                               </p>
                             </div>
                           ) : (
@@ -1345,7 +2009,7 @@ export default function CourseManager() {
                                 }}
                                 className="hidden"
                                 accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.jpg,.jpeg,.png,.gif,.mp4,.webm"
-                                disabled={uploading}
+                                disabled={r2Loading}
                               />
                             </label>
                           )}
@@ -1363,7 +2027,7 @@ export default function CourseManager() {
                           rows={2}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                           placeholder="Brief description of this resource..."
-                          disabled={uploading}
+                          disabled={r2Loading}
                         />
                       </div>
 
@@ -1375,7 +2039,7 @@ export default function CourseManager() {
                             checked={newResource.downloadable}
                             onChange={(e) => setNewResource({...newResource, downloadable: e.target.checked})}
                             className="rounded"
-                            disabled={uploading}
+                            disabled={r2Loading}
                           />
                           <label className="text-sm">Allow Download</label>
                         </div>
@@ -1385,7 +2049,7 @@ export default function CourseManager() {
                             checked={newResource.viewable}
                             onChange={(e) => setNewResource({...newResource, viewable: e.target.checked})}
                             className="rounded"
-                            disabled={uploading}
+                            disabled={r2Loading}
                           />
                           <label className="text-sm">Allow Preview</label>
                         </div>
@@ -1395,10 +2059,10 @@ export default function CourseManager() {
                       <button
                         type="button"
                         onClick={handleAddResource}
-                        disabled={!newResource.name || !newResource.file || uploading}
+                        disabled={!newResource.name || !newResource.file || r2Loading}
                         className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
                       >
-                        {uploading ? (
+                        {r2Loading ? (
                           <>
                             <Loader2 className="h-4 w-4 animate-spin" />
                             Uploading...
@@ -1462,19 +2126,19 @@ export default function CourseManager() {
                       resetLessonForm();
                     }}
                     className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-                    disabled={loading}
+                    disabled={loading || r2Loading}
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={loading || !lessonForm.title || !lessonForm.videoUrl}
+                    disabled={loading || r2Loading || !lessonForm.title}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
                   >
-                    {loading ? (
+                    {loading || r2Loading ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        Adding...
+                        {r2Loading ? 'Uploading...' : 'Adding...'}
                       </>
                     ) : (
                       <>
@@ -1715,6 +2379,11 @@ export default function CourseManager() {
                   <p className="text-xs text-blue-700">
                     Course resources (documents, slides, templates) will be stored in Cloudflare R2 for optimal performance and cost savings.
                   </p>
+                  {!import.meta.env.VITE_R2_WORKER_URL && (
+                    <p className="text-xs text-red-600 mt-1">
+                      ⚠️ R2 service is not configured. File uploads will not work.
+                    </p>
+                  )}
                 </div>
 
                 {/* Action buttons */}
@@ -1850,7 +2519,7 @@ export default function CourseManager() {
                     type="button"
                     onClick={() => togglePublishCourse(editingCourse)}
                     className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-                    disabled={loading}
+                    disabled={loading || r2Loading}
                   >
                     {editingCourse.published ? (
                       <>
@@ -1871,7 +2540,7 @@ export default function CourseManager() {
                       setShowEditModal(false);
                     }}
                     className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-                    disabled={loading}
+                    disabled={loading || r2Loading}
                   >
                     <Trash2 size={16} />
                     Delete Course
@@ -1887,7 +2556,7 @@ export default function CourseManager() {
                     resetEditForm();
                   }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                  disabled={loading}
+                  disabled={loading || r2Loading}
                 >
                   Done
                 </button>
@@ -1923,7 +2592,7 @@ export default function CourseManager() {
                   type="button"
                   onClick={() => setConfirmDelete(null)}
                   className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                  disabled={loading}
+                  disabled={loading || r2Loading}
                 >
                   Cancel
                 </button>
@@ -1931,7 +2600,7 @@ export default function CourseManager() {
                   type="button"
                   onClick={() => deleteCourse(confirmDelete.id)}
                   className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2 transition-colors"
-                  disabled={loading}
+                  disabled={loading || r2Loading}
                 >
                   {loading ? (
                     <>

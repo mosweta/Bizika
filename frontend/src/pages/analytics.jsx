@@ -368,13 +368,7 @@ export default function Analytics() {
           color="bg-purple-500"
           description={`${stats.completedLessons}/${stats.totalLessons} lessons`}
         />
-        <StatCard
-          title="Total Revenue"
-          value={`$${stats.revenue.toLocaleString()}`}
-          icon={DollarSign}
-          color="bg-yellow-500"
-          description="From paid courses"
-        />
+        
       </div>
 
       {/* Charts and Top Courses */}

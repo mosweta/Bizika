@@ -260,13 +260,34 @@ const EdpuzzleVideoPlayer = ({
   }, [isMuted]);
 
   // Fullscreen
-  const toggleFullscreen = useCallback(() => {
+  // Fullscreen with orientation lock
+  const toggleFullscreen = useCallback(async () => {
     if (!containerRef.current) return;
     
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen?.();
-    } else {
-      document.exitFullscreen?.();
+    try {
+      if (!document.fullscreenElement) {
+        // Enter fullscreen
+        await containerRef.current.requestFullscreen();
+        
+        // Lock orientation to landscape on mobile
+        if (window.screen.orientation && window.screen.orientation.lock) {
+          try {
+            await window.screen.orientation.lock('landscape');
+          } catch (err) {
+            console.log('Orientation lock not supported or already locked:', err);
+          }
+        }
+      } else {
+        // Unlock orientation first
+        if (window.screen.orientation && window.screen.orientation.unlock) {
+          await window.screen.orientation.unlock();
+        }
+        
+        // Exit fullscreen
+        await document.exitFullscreen();
+      }
+    } catch (error) {
+      console.error('Fullscreen error:', error);
     }
   }, []);
 
