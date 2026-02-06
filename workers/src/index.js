@@ -777,18 +777,19 @@ function generateAdminEmailTemplate(name, email, subject, message) {
                 <div class="value message-box">${escapeHtml(message)}</div>
             </div>
             
-            <div class="field">
+          <div class="field">
     <div class="label">Timestamp</div>
-        <div class="field">
-    <div class="label">Timestamp</div>
-    <div class="value">${new Date().toLocaleString('en-KE', {
+    <div class="value">${new Date().toLocaleString('en-US', {
         timeZone: 'Africa/Nairobi',
-        dateStyle: 'medium',
-        timeStyle: 'long'
-    })}</div>
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    })} GMT+3</div>
 </div>
-</div>
-    </div>
             
             <div class="footer">
                 <p>💡 <strong>Action Required:</strong> Please respond within 24 hours.</p>
