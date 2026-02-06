@@ -72,6 +72,301 @@ export default {
   },
 };
 
+// ============================================================================
+// UPDATED HANDLERS - SINGLE SET (Remove the old ones at the bottom)
+// ============================================================================
+
+// Updated List Handler
+async function handleList(request, env, url) {
+  try {
+    const prefix = url.searchParams.get('prefix') || '';
+    const limit = parseInt(url.searchParams.get('limit') || '100');
+    const courseId = url.searchParams.get('courseId');
+    
+    let listPrefix = prefix;
+    if (courseId) {
+      listPrefix = `uploads/${courseId}/${prefix}`;
+    }
+
+    const options = {
+      prefix: listPrefix,
+      limit: Math.min(limit, 1000)
+    };
+
+    console.log('Listing files with options:', options);
+    
+    const list = await env.CORRESOURCES.list(options);
+    
+    // Use Promise.all to handle async operations in map
+    const files = await Promise.all(
+      list.objects.map(async (obj) => {
+        const fileName = obj.key.split('/').pop();
+        const fileExt = fileName.split('.').pop().toLowerCase();
+        
+        // Get signed URL (async operation)
+        const signedUrl = await env.CORRESOURCES.get(obj.key, { 
+          sign: { expiresIn: 3600 } 
+        });
+        
+        return {
+          key: obj.key,
+          name: fileName,
+          originalName: obj.customMetadata?.originalName || fileName,
+          size: obj.size,
+          formattedSize: formatBytes(obj.size),
+          uploaded: obj.uploaded,
+          url: `${new URL(request.url).origin}/cdn/${obj.key}`,
+          signedUrl,
+          metadata: {
+            contentType: obj.httpMetadata?.contentType || getFileType(obj.key),
+            originalName: obj.customMetadata?.originalName,
+            type: obj.customMetadata?.type || getFileType(obj.key).split('/')[0],
+            description: obj.customMetadata?.description,
+            courseId: obj.customMetadata?.courseId,
+            lessonId: obj.customMetadata?.lessonId,
+            ...obj.customMetadata
+          }
+        };
+      })
+    );
+    
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        files,
+        total: files.length,
+        truncated: list.truncated,
+        cursor: list.cursor
+      }
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('List error:', error);
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Failed to list files', 
+      message: error.message 
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+// Updated Upload Handler
+async function handleUpload(request, env) {
+  try {
+    const contentType = request.headers.get('content-type') || '';
+    
+    if (!contentType.includes('multipart/form-data')) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'Content-Type must be multipart/form-data' 
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    const formData = await request.formData();
+    const file = formData.get('file');
+    const folder = formData.get('folder') || 'course-resources';
+    const courseId = formData.get('courseId') || 'general';
+    const userId = formData.get('userId') || 'admin';
+    const metadataStr = formData.get('metadata');
+    
+    if (!file) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'No file uploaded' 
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    const filename = file.name;
+    const fileBuffer = await file.arrayBuffer();
+    
+    // Parse metadata
+    let metadata = {};
+    try {
+      if (metadataStr) {
+        metadata = JSON.parse(metadataStr);
+      }
+    } catch (e) {
+      console.warn('Failed to parse metadata:', e);
+    }
+    
+    // Generate unique key
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(2, 9);
+    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const key = `${folder}/${courseId}/${timestamp}_${randomId}_${safeFilename}`;
+    
+    // Upload to R2
+    await env.CORRESOURCES.put(key, fileBuffer, {
+      httpMetadata: {
+        contentType: file.type || getFileType(filename)
+      },
+      customMetadata: {
+        originalName: filename,
+        uploadedAt: new Date().toISOString(),
+        size: fileBuffer.byteLength.toString(),
+        folder,
+        courseId,
+        userId,
+        ...metadata
+      }
+    });
+
+    // Generate URLs
+    const baseUrl = new URL(request.url).origin;
+    const fileUrl = `${baseUrl}/cdn/${key}`;
+    const signedUrl = await env.CORRESOURCES.get(key, { sign: { expiresIn: 86400 } });
+    
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        key,
+        filename,
+        originalName: filename,
+        size: fileBuffer.byteLength,
+        formattedSize: formatBytes(fileBuffer.byteLength),
+        url: fileUrl,
+        signedUrl,
+        contentType: file.type || getFileType(filename),
+        metadata: {
+          folder,
+          courseId,
+          userId,
+          uploadedAt: new Date().toISOString(),
+          ...metadata
+        },
+        message: 'File uploaded successfully'
+      }
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Upload error:', error);
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Upload failed', 
+      message: error.message 
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// Updated Signed URL Handler
+async function handleSignedUrl(request, env, url) {
+  try {
+    const key = url.searchParams.get('key');
+    const expiresIn = parseInt(url.searchParams.get('expiresIn') || '3600');
+    
+    if (!key) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'Missing key parameter' 
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    const signedUrl = await env.CORRESOURCES.get(key, {
+      sign: { expiresIn }
+    });
+    
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        url: signedUrl,
+        expiresIn,
+        key
+      }
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Signed URL error:', error);
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Failed to generate signed URL', 
+      message: error.message 
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// Updated Delete Handler
+async function handleDelete(request, env, url) {
+  try {
+    const key = url.searchParams.get('key');
+    
+    if (!key) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'Missing key parameter' 
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    // Check if file exists
+    const object = await env.CORRESOURCES.get(key);
+    if (!object) {
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'File not found' 
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    await env.CORRESOURCES.delete(key);
+    
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        message: 'File deleted successfully',
+        key
+      }
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+    
+  } catch (error) {
+    console.error('Delete error:', error);
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Delete failed', 
+      message: error.message 
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
+    });
+  }
+}
+
+// ============================================================================
+// EXISTING HANDLERS (Keep these as they are)
+// ============================================================================
+
 // Fix the escapeHtml function for Cloudflare Workers
 function escapeHtml(text) {
   if (typeof text !== 'string') return text;
@@ -83,6 +378,95 @@ function escapeHtml(text) {
     .replace(/'/g, "&#039;");
 }
 
+// ==================== RATE LIMITING FUNCTIONS ====================
+
+/**
+ * Simple IP-based rate limiter: 10 requests per hour
+ */
+async function checkRateLimit(request, env) {
+  try {
+    // Get client IP (Cloudflare provides the real IP)
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    
+    // Skip rate limiting for localhost/development
+    if (ip === '127.0.0.1' || ip === '::1' || ip === 'unknown') {
+      return { allowed: true, remaining: 10 };
+    }
+    
+    // Create rate limit key: contact:{ip}:{current-hour}
+    const now = new Date();
+    const hour = now.getHours();
+    const key = `contact:${ip}:${hour}`;
+    
+    const limit = 10; // 10 requests per hour
+    const window = 3600; // 1 hour in seconds
+    
+    // Get current count
+    const current = await env.RATE_LIMITER.get(key);
+    let count = current ? parseInt(current) : 0;
+    
+    console.log(`Rate limit check for ${ip}: count=${count}, limit=${limit}`);
+    
+    if (count >= limit) {
+      // Calculate when they can try again (next hour)
+      const nextHour = new Date(now);
+      nextHour.setHours(hour + 1, 0, 0, 0);
+      const waitMinutes = Math.ceil((nextHour - now) / 1000 / 60);
+      
+      return {
+        allowed: false,
+        message: `Maximum submissions reached. You can submit again in ${waitMinutes} minutes.`,
+        reset: nextHour.getTime(),
+        waitMinutes
+      };
+    }
+    
+    // Increment count
+    count++;
+    await env.RATE_LIMITER.put(key, count.toString(), {
+      expirationTtl: window
+    });
+    
+    return {
+      allowed: true,
+      remaining: limit - count,
+      reset: now.setHours(hour + 1, 0, 0, 0)
+    };
+    
+  } catch (error) {
+    console.error('Rate limit check error:', error);
+    // Fail open - allow the request if rate limiting fails
+    return { allowed: true, remaining: 10, error: error.message };
+  }
+}
+
+/**
+ * Clean up old rate limit keys (optional maintenance)
+ */
+async function cleanupOldKeys(env) {
+  try {
+    // Run cleanup with 1% probability (once every 100 requests)
+    if (Math.random() < 0.01) {
+      const keys = await env.RATE_LIMITER.list();
+      const now = Date.now();
+      
+      for (const key of keys.keys) {
+        // Cleanup keys older than 24 hours
+        if (key.name.startsWith('contact:')) {
+          const [, , hour] = key.name.split(':');
+          const keyTime = new Date();
+          keyTime.setHours(parseInt(hour), 0, 0, 0);
+          
+          if (now - keyTime > 24 * 3600 * 1000) {
+            await env.RATE_LIMITER.delete(key.name);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    // Silently fail - cleanup is optional
+  }
+}
 // Contact Form Handler - FIXED Resend email configuration
 async function handleContactForm(request, env) {
   try {
@@ -180,7 +564,7 @@ async function handleContactForm(request, env) {
         to: NOTIFICATION_EMAIL,
         subject: `New Contact Form: ${subject}`,
         from: `${senderName} <${fromEmail}>`,
-        reply_to: email, // Resend uses reply_to with underscore
+        reply_to: email,
         html: generateAdminEmailTemplate(name, email, subject, message),
         text: generatePlainTextEmail(name, email, subject, message)
       };
@@ -297,7 +681,7 @@ async function verifyRecaptcha(token, env) {
   }
 }
 
-// Send email via Resend - IMPROVED error handling
+// Send email via Resend
 async function sendEmail(emailData, apiKey) {
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -367,7 +751,11 @@ function generateAdminEmailTemplate(name, email, subject, message) {
 <body>
     <div class="container">
         <div class="header">
-            <h1>📬 New Contact Form Submission</h1>
+          <img src="https://bizika.pages.dev/logo3.png" 
+                alt="Pavoc LMS"
+                width="140"
+                style="max-width: 140px; height: auto; border: 0; display: block; margin: 0 auto;">
+            <h1>New Contact Form Submission</h1>
             <p>From Pavoc LMS Website</p>
         </div>
         <div class="content">
@@ -390,9 +778,13 @@ function generateAdminEmailTemplate(name, email, subject, message) {
             </div>
             
             <div class="field">
-                <div class="label">Timestamp</div>
-                <div class="value">${new Date().toLocaleString()}</div>
-            </div>
+    <div class="label">Timestamp</div>
+        <div class="value">${new Date().toLocaleString('am-ET', {
+            timeZone: 'Africa/Addis_Ababa',
+            dateStyle: 'medium',
+            timeStyle: 'long'
+        })}</div>
+    </div>
             
             <div class="footer">
                 <p>💡 <strong>Action Required:</strong> Please respond within 24 hours.</p>
@@ -512,177 +904,6 @@ Website: https://bizika.pages.dev
 
 This is an automated message. Please do not reply to this email.
   `;
-}
-
-// File Upload Handler
-async function handleUpload(request, env) {
-  try {
-    const contentType = request.headers.get('content-type') || '';
-    
-    if (!contentType.includes('multipart/form-data')) {
-      return new Response(JSON.stringify({ error: 'Content-Type must be multipart/form-data' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    }
-
-    const formData = await request.formData();
-    const file = formData.get('file');
-    
-    if (!file) {
-      return new Response(JSON.stringify({ error: 'No file uploaded' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    }
-
-    const filename = file.name;
-    const fileBuffer = await file.arrayBuffer();
-    
-    // Generate unique key with timestamp
-    const timestamp = Date.now();
-    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = `uploads/${timestamp}_${safeFilename}`;
-    
-    // Upload to R2
-    await env.CORRESOURCES.put(key, fileBuffer, {
-      httpMetadata: {
-        contentType: file.type || getFileType(filename)
-      },
-      customMetadata: {
-        originalName: filename,
-        uploadedAt: new Date().toISOString(),
-        size: fileBuffer.byteLength.toString()
-      }
-    });
-
-    const fileUrl = `${new URL(request.url).origin}/cdn/${key}`;
-    
-    return new Response(JSON.stringify({
-      success: true,
-      key,
-      filename,
-      size: fileBuffer.byteLength,
-      url: fileUrl,
-      message: 'File uploaded successfully'
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-    
-  } catch (error) {
-    console.error('Upload error:', error);
-    return new Response(JSON.stringify({ error: 'Upload failed', message: error.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-  }
-}
-
-// File Delete Handler
-async function handleDelete(request, env, url) {
-  try {
-    const key = url.searchParams.get('key');
-    
-    if (!key) {
-      return new Response(JSON.stringify({ error: 'Missing key parameter' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    }
-
-    await env.CORRESOURCES.delete(key);
-    
-    return new Response(JSON.stringify({
-      success: true,
-      message: 'File deleted successfully'
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-    
-  } catch (error) {
-    console.error('Delete error:', error);
-    return new Response(JSON.stringify({ error: 'Delete failed', message: error.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-  }
-}
-
-// Generate Signed URL Handler
-async function handleSignedUrl(request, env, url) {
-  try {
-    const key = url.searchParams.get('key');
-    const expiresIn = parseInt(url.searchParams.get('expiresIn') || '3600');
-    
-    if (!key) {
-      return new Response(JSON.stringify({ error: 'Missing key parameter' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    }
-
-    const signedUrl = await env.CORRESOURCES.get(key, {
-      sign: { expiresIn }
-    });
-    
-    return new Response(JSON.stringify({
-      success: true,
-      url: signedUrl,
-      expiresIn
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-    
-  } catch (error) {
-    console.error('Signed URL error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to generate signed URL', message: error.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-  }
-}
-
-// List Files Handler
-async function handleList(request, env, url) {
-  try {
-    const prefix = url.searchParams.get('prefix') || '';
-    const limit = parseInt(url.searchParams.get('limit') || '100');
-    
-    const options = {
-      prefix,
-      limit: Math.min(limit, 1000)
-    };
-
-    const list = await env.CORRESOURCES.list(options);
-    
-    const files = list.objects.map(obj => ({
-      key: obj.key,
-      size: obj.size,
-      uploaded: obj.uploaded,
-      httpMetadata: obj.httpMetadata,
-      customMetadata: obj.customMetadata
-    }));
-    
-    return new Response(JSON.stringify({
-      success: true,
-      files,
-      truncated: list.truncated,
-      cursor: list.cursor
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-    
-  } catch (error) {
-    console.error('List error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to list files', message: error.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-  }
 }
 
 // Health Check Handler

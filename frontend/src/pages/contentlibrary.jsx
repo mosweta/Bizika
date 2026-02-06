@@ -257,6 +257,13 @@ export default function ContentLibrary() {
     isPublished: true
   });
 
+    // Add this function here
+  const toggleLessonExpansion = (lessonId) => {
+    setExpandedLessons(prev => ({
+      ...prev,
+      [lessonId]: !prev[lessonId]
+    }));
+  };
   // Fetch courses with lessons and resources
   const fetchCourses = useCallback(async () => {
     try {
@@ -364,34 +371,37 @@ export default function ContentLibrary() {
   }, [fetchCourses]);
 
   // Fetch storage stats from R2
-  const fetchStorageStats = async () => {
-    try {
-      const files = await R2Service.listFiles({ limit: 1000 });
-      const totalSize = files.reduce((sum, file) => sum + file.size, 0);
-      const fileCount = files.length;
-      
+const fetchStorageStats = async () => {
+  try {
+    console.log('📊 Fetching storage stats...');
+    
+    // Test connection first
+    const connection = await R2Service.testConnection();
+    if (!connection.connected) {
+      console.warn('R2 Service not available:', connection.error);
       setStorageStats({
-        totalSize,
-        fileCount,
-        formattedSize: R2Service.formatBytes(totalSize),
-        byType: files.reduce((acc, file) => {
-          const type = file.metadata?.fileType?.split('/')[0] || 'other';
-          acc[type] = (acc[type] || 0) + 1;
-          return acc;
-        }, {})
+        totalSize: 0,
+        fileCount: 0,
+        formattedSize: '0 Bytes',
+        byType: {}
       });
-    } catch (error) {
-      console.error('Failed to fetch storage stats:', error);
+      return;
     }
-  };
-
-  // Toggle lesson expansion
-  const toggleLessonExpansion = (lessonId) => {
-    setExpandedLessons(prev => ({
-      ...prev,
-      [lessonId]: !prev[lessonId]
-    }));
-  };
+    
+    const stats = await R2Service.getStorageStats();
+    console.log('✅ Storage stats fetched:', stats);
+    
+    setStorageStats(stats);
+  } catch (error) {
+    console.error('Failed to fetch storage stats:', error);
+    setStorageStats({
+      totalSize: 0,
+      fileCount: 0,
+      formattedSize: '0 Bytes',
+      byType: {}
+    });
+  }
+};
 
   // Search and filter logic
   const filteredCourses = useMemo(() => {
@@ -530,86 +540,93 @@ export default function ContentLibrary() {
     }
   };
 
-  // Enhanced file upload to R2
-  const handleR2Upload = async (file, lesson) => {
-    const uploadId = uuidv4();
+ 
+
+// Update the upload function to handle metadata better:
+const handleR2Upload = async (file, lesson) => {
+  const uploadId = uuidv4();
+  
+  // Add to upload queue
+  setUploadQueue(prev => [...prev, {
+    id: uploadId,
+    file,
+    status: 'queued',
+    progress: 0,
+    startTime: Date.now()
+  }]);
+  
+  try {
+    setUploadProgress(prev => ({ ...prev, [uploadId]: 0 }));
+    setUploadQueue(prev => prev.map(item => 
+      item.id === uploadId ? { ...item, status: 'uploading' } : item
+    ));
     
-    // Add to upload queue
-    setUploadQueue(prev => [...prev, {
-      id: uploadId,
-      file,
-      status: 'queued',
-      progress: 0,
-      startTime: Date.now()
-    }]);
-    
-    try {
-      setUploadProgress(prev => ({ ...prev, [uploadId]: 0 }));
-      
-      setUploadQueue(prev => prev.map(item => 
-        item.id === uploadId ? { ...item, status: 'uploading' } : item
-      ));
-      
-      // Simulate progress
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          const current = prev[uploadId] || 0;
-          if (current >= 95) {
-            clearInterval(progressInterval);
-            return prev;
-          }
-          return { ...prev, [uploadId]: current + 5 };
-        });
-      }, 200);
-      
-      // Upload to R2
-      const resourceData = await R2Service.uploadFile(file, {
-        folder: 'course-resources',
-        courseId: lesson.courseId,
-        lessonId: lesson.id,
-        userId: 'admin',
-        metadata: {
-          type: resourceForm.type,
-          description: resourceForm.description || '',
-          originalName: file.name
+    // Simulate progress
+    const progressInterval = setInterval(() => {
+      setUploadProgress(prev => {
+        const current = prev[uploadId] || 0;
+        if (current >= 95) {
+          clearInterval(progressInterval);
+          return prev;
         }
+        return { ...prev, [uploadId]: current + 5 };
       });
-      
-      clearInterval(progressInterval);
-      setUploadProgress(prev => ({ ...prev, [uploadId]: 100 }));
-      
-      // Update queue
-      setUploadQueue(prev => prev.map(item => 
-        item.id === uploadId ? { 
-          ...item, 
-          status: 'completed', 
-          progress: 100,
-          result: resourceData.data,
-          endTime: Date.now()
-        } : item
-      ));
-      
-      // Return the R2 data for Firestore
-      return resourceData.data;
-      
-    } catch (error) {
-      console.error('Upload failed:', error);
-      setUploadQueue(prev => prev.map(item => 
-        item.id === uploadId ? { 
-          ...item, 
-          status: 'failed', 
-          error: error.message 
-        } : item
-      ));
-      
-      // Remove failed upload after 5 seconds
-      setTimeout(() => {
-        setUploadQueue(prev => prev.filter(item => item.id !== uploadId));
-      }, 5000);
-      
-      throw error;
+    }, 200);
+    
+    // Upload to R2 with proper metadata
+    const uploadResult = await R2Service.uploadFile(file, {
+      folder: 'course-resources',
+      courseId: lesson.courseId,
+      lessonId: lesson.id,
+      userId: 'admin',
+      metadata: {
+        type: resourceForm.type,
+        description: resourceForm.description || '',
+        originalName: file.name,
+        fileType: file.type,
+        fileSize: file.size,
+        uploadedBy: 'admin'
+      }
+    });
+    
+    clearInterval(progressInterval);
+    
+    if (!uploadResult.success) {
+      throw new Error(uploadResult.error || 'Upload failed');
     }
-  };
+    
+    setUploadProgress(prev => ({ ...prev, [uploadId]: 100 }));
+    
+    // Update queue
+    setUploadQueue(prev => prev.map(item => 
+      item.id === uploadId ? { 
+        ...item, 
+        status: 'completed', 
+        progress: 100,
+        result: uploadResult.data,
+        endTime: Date.now()
+      } : item
+    ));
+    
+    return uploadResult.data;
+    
+  } catch (error) {
+    console.error('Upload failed:', error);
+    setUploadQueue(prev => prev.map(item => 
+      item.id === uploadId ? { 
+        ...item, 
+        status: 'failed', 
+        error: error.message 
+      } : item
+    ));
+    
+    setTimeout(() => {
+      setUploadQueue(prev => prev.filter(item => item.id !== uploadId));
+    }, 5000);
+    
+    throw error;
+  }
+};
 
   // Add resource (combines R2 upload + Firestore save)
   const handleAddResource = async () => {

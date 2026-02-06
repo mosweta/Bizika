@@ -1,108 +1,159 @@
-// src/services/r2service.js - Complete Fixed Version
+// src/services/r2service.js - Updated version
 class R2Service {
   constructor() {
+    // Remove trailing /r2 if present
     let workerUrl = import.meta.env.VITE_R2_WORKER_URL || 'http://localhost:8787';
     workerUrl = workerUrl.replace(/\/r2$/, '');
     this.workerEndpoint = workerUrl;
     this.apiKey = import.meta.env.VITE_R2_API_KEY;
     
-    console.log('R2Service initialized with endpoint:', this.workerEndpoint);
+    console.log('📦 R2Service initialized with endpoint:', this.workerEndpoint);
   }
 
-  async uploadFile(file, options = {}) {
+  // Helper method for API calls
+  async _fetchApi(endpoint, options = {}) {
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('folder', options.folder || 'course-resources');
-      formData.append('courseId', options.courseId || 'general');
-      formData.append('userId', options.userId || 'admin');
-      formData.append('metadata', JSON.stringify({
-        type: options.type || 'document',
-        description: options.description || '',
-        category: options.category || 'document',
-        ...options.metadata
-      }));
-
+      const url = `${this.workerEndpoint}${endpoint}`;
+      console.log(`📡 API Call: ${options.method || 'GET'} ${url}`);
+      
       const headers = {
         'X-Request-ID': this.generateRequestId(),
-        ...(this.apiKey && { 'Authorization': `Bearer ${this.apiKey}` })
+        ...(this.apiKey && { 'Authorization': `Bearer ${this.apiKey}` }),
+        ...options.headers
       };
       
-      const response = await fetch(`${this.workerEndpoint}/api/upload`, {
-        method: 'POST',
-        body: formData,
-        headers
-      });
+      const response = await fetch(url, { ...options, headers });
       
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Upload failed');
+        const errorData = await response.json().catch(() => ({
+          error: `HTTP ${response.status}`,
+          message: response.statusText
+        }));
+        throw new Error(errorData.error || errorData.message || 'API request failed');
       }
       
       const result = await response.json();
-      return { success: true, data: result.data };
       
-    } catch (error) {
-      console.error('❌ R2 Upload Error:', error);
-      return { 
-        success: false, 
-        error: error.message,
-        data: null
-      };
-    }
-  }
-
-  async deleteFile(key) {
-    try {
-      const headers = {
-        'X-Request-ID': this.generateRequestId(),
-        ...(this.apiKey && { 'Authorization': `Bearer ${this.apiKey}` })
-      };
-      
-      const response = await fetch(`${this.workerEndpoint}/api/delete?key=${encodeURIComponent(key)}`, {
-        method: 'DELETE',
-        headers
-      });
-      
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Delete failed');
+      if (!result.success) {
+        throw new Error(result.error || 'Operation failed');
       }
       
-      const result = await response.json();
-      return { success: true, data: result };
+      return result.data;
       
     } catch (error) {
-      console.error('❌ R2 Delete Error:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  async getUrl(key) {
-    try {
-      const response = await fetch(
-        `${this.workerEndpoint}/api/signed-url?key=${encodeURIComponent(key)}`
-      );
-      
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to get URL');
-      }
-      
-      const result = await response.json();
-      return result.data.url;
-      
-    } catch (error) {
-      console.error('❌ R2 URL Error:', error);
+      console.error(`❌ API Error (${endpoint}):`, error);
       throw error;
     }
   }
 
-  // Alias for getUrl (for backward compatibility)
-  async getSignedUrl(key, expiresIn = 3600) {
-    return this.getUrl(key);
+// Enhanced R2Service with progress tracking
+// Add to your R2Service class in r2service.js:
+
+async uploadFile(file, metadata = {}, onProgress) {
+  try {
+    console.log(`📤 Uploading: ${file.name} (${this.formatBytes(file.size)})`);
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    // Add metadata
+    if (metadata) {
+      Object.entries(metadata).forEach(([key, value]) => {
+        if (key !== 'file') {
+          formData.append(key, typeof value === 'object' ? JSON.stringify(value) : value);
+        }
+      });
+    }
+    
+    const xhr = new XMLHttpRequest();
+    
+    return new Promise((resolve, reject) => {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable && onProgress) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          onProgress(percentComplete);
+        }
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            if (result.success) {
+              resolve({ success: true, data: result.data });
+            } else {
+              reject(new Error(result.error || 'Upload failed'));
+            }
+          } catch (error) {
+            reject(new Error('Invalid response from server'));
+          }
+        } else {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      });
+      
+      xhr.addEventListener('error', () => {
+        reject(new Error('Network error'));
+      });
+      
+      xhr.addEventListener('abort', () => {
+        reject(new Error('Upload cancelled'));
+      });
+      
+      xhr.open('POST', `${this.workerEndpoint}/api/upload`);
+      xhr.setRequestHeader('Authorization', `Bearer ${this.apiKey}`);
+      xhr.send(formData);
+    });
+    
+  } catch (error) {
+    console.error('❌ Upload failed:', error);
+    return { 
+      success: false, 
+      error: error.message,
+      data: null 
+    };
+  }
+}
+
+  // Delete file
+  async deleteFile(key) {
+    try {
+      console.log(`🗑️ Deleting: ${key}`);
+      const result = await this._fetchApi(`/api/delete?key=${encodeURIComponent(key)}`, {
+        method: 'DELETE'
+      });
+      
+      return { success: true, data: result };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   }
 
+  // Get file URL
+// In R2Service class - ensure getUrl returns a string URL
+async getUrl(key) {
+  try {
+    const result = await this._fetchApi(`/api/signed-url?key=${encodeURIComponent(key)}`);
+    
+    // Ensure we return a string URL
+    if (typeof result === 'string') {
+      return result;
+    } else if (result?.url) {
+      return result.url;
+    } else if (result?.signedUrl) {
+      return result.signedUrl;
+    } else {
+      // Fallback: construct URL
+      return `${this.workerEndpoint}/cdn/${key}`;
+    }
+  } catch (error) {
+    console.error('Failed to get URL:', error);
+    // Fallback URL
+    return `${this.workerEndpoint}/cdn/${key}`;
+  }
+}
+
+  // List files
   async listFiles(options = {}) {
     try {
       const params = new URLSearchParams();
@@ -110,70 +161,116 @@ class R2Service {
       if (options.limit) params.append('limit', options.limit.toString());
       if (options.courseId) params.append('courseId', options.courseId);
       
-      const response = await fetch(`${this.workerEndpoint}/api/list?${params.toString()}`);
-      
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to list files');
-      }
-      
-      const result = await response.json();
-      return result.data.files;
-      
+      const result = await this._fetchApi(`/api/list?${params.toString()}`);
+      return result.files;
     } catch (error) {
-      console.error('❌ R2 List Error:', error);
-      throw error;
+      console.error('List files error:', error);
+      // Return empty array instead of throwing for better UX
+      return [];
     }
   }
 
-  extractKeyFromUrl(url) {
+  // Get storage statistics
+  async getStorageStats() {
     try {
-      if (url.includes('r2.cloudflarestorage.com')) {
-        const urlObj = new URL(url);
-        return urlObj.pathname.substring(1); // Remove leading slash
-      }
-      return null;
-    } catch (error) {
-      return null;
-    }
-  }
+      const files = await this.listFiles({ limit: 1000 });
+      const totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0);
+      const fileCount = files.length;
+      
+      // Group by type
+      const byType = files.reduce((acc, file) => {
+        const type = file.metadata?.type || 
+                    file.metadata?.contentType?.split('/')[0] || 
+                    'other';
+        acc[type] = (acc[type] || 0) + 1;
+        return acc;
+      }, {});
 
-  async batchDeleteFiles(keys) {
-    try {
-      const results = await Promise.allSettled(
-        keys.map(key => this.deleteFile(key))
-      );
-      
-      const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
-      const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
-      const errors = results
-        .filter(r => r.status === 'rejected')
-        .map(r => r.reason.message);
-      
       return {
-        successful,
-        failed,
-        total: keys.length,
-        errors: errors.length > 0 ? errors : undefined
+        totalSize,
+        fileCount,
+        formattedSize: this.formatBytes(totalSize),
+        byType,
+        files
       };
     } catch (error) {
-      console.error('Batch delete error:', error);
-      return { successful: 0, failed: keys.length, total: keys.length, errors: [error.message] };
+      console.error('Failed to get storage stats:', error);
+      return {
+        totalSize: 0,
+        fileCount: 0,
+        formattedSize: '0 Bytes',
+        byType: {},
+        files: []
+      };
     }
   }
 
-  generateRequestId() {
-    return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  // Batch operations
+  async batchDeleteFiles(keys) {
+    const results = await Promise.allSettled(
+      keys.map(key => this.deleteFile(key))
+    );
+    
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
+    
+    return {
+      successful,
+      failed,
+      total: keys.length
+    };
   }
 
-  formatBytes(bytes) {
+  // Extract key from URL
+  extractKeyFromUrl(url) {
+    if (!url) return null;
+    
+    try {
+      const urlObj = new URL(url);
+      const path = urlObj.pathname;
+      
+      // Handle different URL patterns
+      if (path.startsWith('/cdn/')) {
+        return path.substring(5); // Remove '/cdn/'
+      }
+      
+      // Remove leading slash
+      return path.startsWith('/') ? path.substring(1) : path;
+    } catch {
+      return null;
+    }
+  }
+
+  // Utility methods
+  generateRequestId() {
+    return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  formatBytes(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
+    
     const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  }
+
+  // Test connection
+  async testConnection() {
+    try {
+      const response = await fetch(`${this.workerEndpoint}/health`);
+      const data = await response.json();
+      return { 
+        connected: response.ok, 
+        status: data.status || 'unknown' 
+      };
+    } catch (error) {
+      return { connected: false, error: error.message };
+    }
   }
 }
 
-// Export singleton instance
+// Export singleton
 export default new R2Service();

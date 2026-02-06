@@ -299,6 +299,25 @@ export default function CourseManager() {
     return () => unsubscribe();
   }, []);
 
+  // Add this useEffect to test R2 connection
+useEffect(() => {
+  const testR2Connection = async () => {
+    try {
+      const connection = await R2Service.testConnection();
+      if (!connection.connected) {
+        console.warn('R2 Service not available:', connection.error);
+        setR2Error('R2 service is not available. File uploads may fail.');
+      }
+    } catch (error) {
+      console.error('R2 connection test failed:', error);
+    }
+  };
+  
+  if (import.meta.env.VITE_R2_WORKER_URL) {
+    testR2Connection();
+  }
+}, []);
+
   const fetchCourses = async () => {
     try {
       setLoading(true);
@@ -364,53 +383,54 @@ export default function CourseManager() {
   };
 
   // Handle file upload to R2 with improved error handling
-  const handleFileUpload = async (file, metadata = {}) => {
-    try {
-      const uploadOptions = {
-        folder: 'course-resources',
-        courseId: selectedCourse?.id || 'general',
-        metadata: {
-          type: getFileType(file.name),
-          originalName: file.name,
-          uploadedBy: user?.email || 'admin',
-          ...metadata
-        }
-      };
-
-      const result = await R2Service.uploadFile(file, uploadOptions);
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Upload failed');
-      }
-
-      return {
-        url: result.data.urls?.cdn || result.data.url || result.data.publicUrl,
-        key: result.data.key,
-        name: result.data.originalName || file.name,
-        fileName: result.data.fileName,
-        size: result.data.size || R2Service.formatBytes(file.size),
-        type: result.data.type || getFileType(file.name),
-        uploadedAt: result.data.uploadedAt || new Date().toISOString(),
-        publicUrl: result.data.urls?.public || result.data.publicUrl,
-        cdnUrl: result.data.urls?.cdn,
-        downloadUrl: result.data.urls?.download,
-        originalName: result.data.originalName || file.name,
+const handleFileUpload = async (file, metadata = {}) => {
+  try {
+    const uploadOptions = {
+      folder: 'course-resources',
+      courseId: selectedCourse?.id || 'general',
+      metadata: {
+        type: getFileType(file.name),
+        originalName: file.name,
+        uploadedBy: user?.email || 'admin',
         ...metadata
-      };
-    } catch (error) {
-      console.error("Error uploading to R2:", error);
-      
-      const failedUpload = {
-        file,
-        metadata,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      };
-      
-      setFailedUploads(prev => [...prev, failedUpload]);
-      throw error;
+      }
+    };
+
+    const uploadResult = await R2Service.uploadFile(file, uploadOptions);
+    
+    if (!uploadResult.success) {
+      throw new Error(uploadResult.error || 'Upload failed');
     }
-  };
+
+    const r2Data = uploadResult.data;
+    
+    return {
+      url: r2Data.url,
+      key: r2Data.key,
+      name: r2Data.originalName || r2Data.filename || file.name,
+      fileName: r2Data.filename,
+      size: r2Data.size,
+      type: r2Data.contentType?.split('/')[0] || getFileType(file.name),
+      uploadedAt: r2Data.metadata?.uploadedAt || new Date().toISOString(),
+      // Include all metadata
+      ...r2Data.metadata
+    };
+  } catch (error) {
+    console.error("Error uploading to R2:", error);
+    
+    const failedUpload = {
+      file,
+      metadata,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    };
+    
+    setFailedUploads(prev => [...prev, failedUpload]);
+    throw error;
+  }
+};
+
+    
 
   // Retry failed uploads
   const retryFailedUpload = async (failedUpload) => {
@@ -431,73 +451,79 @@ export default function CourseManager() {
   };
 
   // Add resource to lesson with R2 upload
-  const handleAddResource = async () => {
-    if (!newResource.name || !newResource.file) {
-      alert("Please provide a resource name and select a file");
-      return;
+const handleAddResource = async () => {
+  if (!newResource.name || !newResource.file) {
+    alert("Please provide a resource name and select a file");
+    return;
+  }
+
+  try {
+    setR2Loading(true);
+    setUploading(true);
+    setR2Error(null);
+    setUploadProgress(0); // Start at 0
+    
+    const uploadedFile = await R2Service.uploadFile(newResource.file, {
+      category: newResource.category,
+      description: newResource.description,
+      downloadable: newResource.downloadable,
+      viewable: newResource.viewable
+    }, (progress) => {
+      // Real progress callback
+      setUploadProgress(progress);
+    });
+    
+    // Set to 100% when complete
+    setUploadProgress(100);
+    
+    const resource = {
+      ...uploadedFile.data,
+      category: newResource.category,
+      description: newResource.description,
+      downloadable: newResource.downloadable,
+      viewable: newResource.viewable,
+      addedAt: new Date().toISOString()
+    };
+
+    const categoryKey = newResource.category === 'slides' ? 'slides' :
+                       newResource.category === 'template' ? 'templates' : 'documents';
+    
+    setLessonForm(prev => ({
+      ...prev,
+      [categoryKey]: [...prev[categoryKey], resource]
+    }));
+
+    setNewResource({
+      name: "",
+      file: null,
+      type: "document",
+      category: "document",
+      description: "",
+      downloadable: true,
+      viewable: true
+    });
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
 
-    try {
-      setR2Loading(true);
-      setUploading(true);
-      setR2Error(null);
-      
-      const progressInterval = simulateUploadProgress();
-      
-      const uploadedFile = await handleFileUpload(newResource.file, {
-        category: newResource.category,
-        description: newResource.description,
-        downloadable: newResource.downloadable,
-        viewable: newResource.viewable
-      });
-      
-      clearInterval(progressInterval);
-      setUploadProgress(100);
-      
-      const resource = {
-        ...uploadedFile,
-        category: newResource.category,
-        description: newResource.description,
-        downloadable: newResource.downloadable,
-        viewable: newResource.viewable,
-        addedAt: new Date().toISOString()
-      };
-
-      const categoryKey = newResource.category === 'slides' ? 'slides' :
-                         newResource.category === 'template' ? 'templates' : 'documents';
-      
-      setLessonForm(prev => ({
-        ...prev,
-        [categoryKey]: [...prev[categoryKey], resource]
-      }));
-
-      setNewResource({
-        name: "",
-        file: null,
-        type: "document",
-        category: "document",
-        description: "",
-        downloadable: true,
-        viewable: true
-      });
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-
+    // Show 100% briefly, then reset
+    setTimeout(() => {
       setUploadProgress(0);
-      alert("✅ Resource uploaded successfully to Cloudflare R2!");
+    }, 1000);
+    
+    alert("✅ Resource uploaded successfully to Cloudflare R2!");
 
-    } catch (error) {
-      console.error("Error adding resource:", error);
-      setR2Error(`Failed to add resource: ${error.message}`);
-      alert(`Failed to add resource: ${error.message}`);
-    } finally {
-      setR2Loading(false);
-      setUploading(false);
-      setUploadProgress(0);
-    }
-  };
+  } catch (error) {
+    console.error("Error adding resource:", error);
+    setUploadProgress(0);
+    setR2Error(`Failed to add resource: ${error.message}`);
+    alert(`Failed to add resource: ${error.message}`);
+  } finally {
+    setR2Loading(false);
+    setUploading(false);
+  }
+};
 
   // Remove resource (with optional R2 deletion)
   const removeResource = async (category, index) => {
@@ -533,24 +559,24 @@ export default function CourseManager() {
   };
 
   // Download resource from R2
-  const downloadResource = async (resource) => {
-    if (!resource) return;
+const downloadResource = async (resource) => {
+  if (!resource) return;
+  
+  try {
+    setActiveDownloading(resource.key);
     
-    try {
-      setActiveDownloading(resource.key);
-      
-      let url;
-      if (resource.key) {
-        url = await R2Service.getSignedUrl(resource.key, 3600);
-      } else if (resource.downloadUrl) {
-        url = resource.downloadUrl;
-      } else if (resource.url) {
-        url = resource.url;
-      } else if (resource.publicUrl) {
-        url = resource.publicUrl;
-      } else {
-        throw new Error('No valid URL found for resource');
-      }
+    let url;
+    if (resource.key) {
+      url = await R2Service.getUrl(resource.key); // Updated method name
+    } else if (resource.downloadUrl) {
+      url = resource.downloadUrl;
+    } else if (resource.url) {
+      url = resource.url;
+    } else if (resource.publicUrl) {
+      url = resource.publicUrl;
+    } else {
+      throw new Error('No valid URL found for resource');
+    }
       
       const link = document.createElement('a');
       link.href = url;
@@ -571,37 +597,59 @@ export default function CourseManager() {
   };
 
   // Preview resource
-  const previewResource = async (resource) => {
-    if (!resource) return;
+const previewResource = async (resource) => {
+  if (!resource) return;
+  
+  try {
+    setActiveDownloading(resource.key || resource.id);
     
-    try {
-      setActiveDownloading(resource.key);
+    let previewUrl;
+    
+    // Check different possible URL sources
+    if (resource.url && !resource.url.includes('r2.dev')) {
+      // Already has a direct URL
+      previewUrl = resource.url;
+    } else if (resource.key) {
+      // Get signed URL from R2
+      const signedUrl = await R2Service.getUrl(resource.key);
       
-      let url;
-      if (resource.key) {
-        url = await R2Service.getSignedUrl(resource.key, 3600);
-      } else if (resource.url) {
-        url = resource.url;
-      } else if (resource.publicUrl) {
-        url = resource.publicUrl;
-      } else if (resource.cdnUrl) {
-        url = resource.cdnUrl;
+      // Handle different response formats
+      if (typeof signedUrl === 'string') {
+        previewUrl = signedUrl;
+      } else if (signedUrl?.url) {
+        previewUrl = signedUrl.url;
       } else {
-        throw new Error('No valid URL found for resource');
+        throw new Error('Invalid URL response from R2');
       }
-      
-      window.open(url, '_blank');
-      
-      setTimeout(() => {
-        setActiveDownloading(null);
-      }, 1000);
-      
-    } catch (error) {
-      console.error("Error previewing resource:", error);
-      alert("Failed to preview file. Please try again.");
-      setActiveDownloading(null);
+    } else if (resource.publicUrl) {
+      previewUrl = resource.publicUrl;
+    } else if (resource.downloadUrl) {
+      previewUrl = resource.downloadUrl;
+    } else {
+      throw new Error('No previewable URL found');
     }
-  };
+    
+    // Open in new tab
+    window.open(previewUrl, '_blank', 'noopener,noreferrer');
+    
+    setTimeout(() => {
+      setActiveDownloading(null);
+    }, 1000);
+    
+  } catch (error) {
+    console.error("Error previewing resource:", error);
+    
+    // Fallback: Try to create a direct URL from the key
+    if (resource.key) {
+      const fallbackUrl = `${import.meta.env.VITE_R2_WORKER_URL || ''}/cdn/${resource.key}`;
+      window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+    } else {
+      alert(`Failed to preview file: ${error.message}`);
+    }
+    
+    setActiveDownloading(null);
+  }
+};
 
   // Get URL for resource display
   const getResourceUrl = (resource) => {
@@ -681,15 +729,15 @@ export default function CourseManager() {
                   </button>
                 ) : (
                   <>
-                    {resource.viewable !== false && resourceUrl && (
+                    {resource.viewable !== false && (
                       <button
                         type="button"
                         onClick={() => previewResource(resource)}
-                        disabled={activeDownloading === resource.key}
+                        disabled={activeDownloading === (resource.key || resource.id)}
                         className="px-3 py-1 text-sm bg-green-100 text-green-700 rounded hover:bg-green-200 flex items-center gap-1 disabled:opacity-50"
                         title="Preview"
                       >
-                        {activeDownloading === resource.key ? (
+                        {activeDownloading === (resource.key || resource.id) ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
                         ) : (
                           <ExternalLink size={12} />
@@ -697,6 +745,7 @@ export default function CourseManager() {
                         <span className="hidden sm:inline">Preview</span>
                       </button>
                     )}
+                    
                     {resource.downloadable !== false && (
                       <button
                         type="button"
@@ -1108,29 +1157,32 @@ export default function CourseManager() {
       setLoading(true);
       
       // Get all resources for this course from R2
-      try {
-        const files = await R2Service.listFiles({ 
-          prefix: `course-resources/${courseId}/` 
-        });
-        
-        if (files.length > 0) {
-          const shouldDelete = window.confirm(`This course has ${files.length} files in Cloudflare R2. Delete them as well?`);
-          
-          if (shouldDelete) {
-            const keys = files.map(f => f.key).filter(Boolean);
-            if (keys.length > 0) {
-              const deleteResult = await R2Service.batchDeleteFiles(keys);
-              console.log(`Deleted ${deleteResult.successful}/${deleteResult.total} files from R2`);
-              if (deleteResult.failed > 0) {
-                console.warn('Some files failed to delete:', deleteResult.errors);
-              }
-            }
+       // Get all resources for this course from R2
+  try {
+    const files = await R2Service.listFiles({ 
+      prefix: `course-resources/${courseId}/` 
+    });
+    
+    if (files && files.length > 0) { // Add null check
+      const shouldDelete = window.confirm(
+        `This course has ${files.length} files in Cloudflare R2. Delete them as well?`
+      );
+      
+      if (shouldDelete) {
+        const keys = files.map(f => f.key).filter(Boolean);
+        if (keys.length > 0) {
+          const deleteResult = await R2Service.batchDeleteFiles(keys);
+          console.log(`Deleted ${deleteResult.successful}/${deleteResult.total} files from R2`);
+          if (deleteResult.failed > 0) {
+            console.warn('Some files failed to delete:', deleteResult.errors);
           }
         }
-      } catch (r2Error) {
-        console.error("Error cleaning up R2 resources:", r2Error);
-        // Continue with course deletion even if cleanup fails
       }
+    }
+  } catch (r2Error) {
+    console.error("Error cleaning up R2 resources:", r2Error);
+    // Continue with course deletion
+  }
       
       // Delete course from Firestore
       await deleteDoc(doc(db, "courses", courseId));

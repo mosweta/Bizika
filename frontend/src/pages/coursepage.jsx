@@ -65,8 +65,18 @@ const FileIcon = ({ type, className = "h-5 w-5" }) => {
 };
 
 // Helper function to get file type from filename
+// Helper function to get file type from filename - UPDATED with null checks
 const getFileType = (filename) => {
-  const ext = filename.split('.').pop().toLowerCase();
+  if (!filename || typeof filename !== 'string') {
+    return 'default';
+  }
+  
+  const parts = filename.split('.');
+  if (parts.length < 2) {
+    return 'default';
+  }
+  
+  const ext = parts.pop().toLowerCase();
   return FILE_ICONS[ext] ? ext : 'default';
 };
 
