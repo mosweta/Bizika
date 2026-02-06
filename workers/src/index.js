@@ -781,16 +781,12 @@ function generateAdminEmailTemplate(name, email, subject, message) {
     <div class="label">Timestamp</div>
         <div class="field">
     <div class="label">Timestamp</div>
-    <div class="value">${new Date().toLocaleString('en-ET', {
-        timeZone: 'Africa/Addis_Ababa',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
+    <div class="value">${new Date().toLocaleString('en-KE', {
+        timeZone: 'Africa/Nairobi',
+        dateStyle: 'medium',
+        timeStyle: 'long'
     })}</div>
+</div>
 </div>
     </div>
             
