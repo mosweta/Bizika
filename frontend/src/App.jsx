@@ -35,7 +35,12 @@ import PrivacyPolicy from './pages/privacy.jsx';
 import ContactForm from './pages/contact.jsx';
 import Home from './pages/home/home.jsx';
 import AdminLearnDashboard from './pages/adminlearn.jsx';
+import CourseHome from './pages/coursehome.jsx';
 
+// In your router configuration
+import ArchivedLesson from "./pages/archivedlesson.jsx";
+
+// Add this route
 
 
 
@@ -191,8 +196,22 @@ function App() {
           
           </PrivateRoute>
         } />
-          
-        <Route path="/course/:courseId" element={
+
+        
+
+
+          <Route path="/course/:courseId" element={
+          <PrivateRoute allowedRoles={['student', 'admin']}>
+            <CourseHome />
+          </PrivateRoute>
+        } />
+<Route path="/course/:courseId/archived/:lessonId" element={
+          <PrivateRoute allowedRoles={['student', 'admin']}>
+            <ArchivedLesson  />
+          </PrivateRoute>
+        } />
+
+        <Route path="/course/:courseId/lesson/:lessonId" element={
           <PrivateRoute allowedRoles={['student', 'admin']}>
             <CoursePage />
           </PrivateRoute>
