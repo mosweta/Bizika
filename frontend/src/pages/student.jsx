@@ -16,26 +16,30 @@ import {
   BookOpen,
   Clock,
   Award,
-  Calendar,
   Play,
   CheckCircle,
-  Search,
   LogOut,
   User,
+  ChevronRight,
+  TrendingUp,
+  Calendar,
   BarChart3,
-  ChevronRight
+  Sparkles,
+  Layers,
+  Video,
+  FileText
 } from "lucide-react";
 
 export default function StudentDashboard() {
   const [user, setUser] = useState(null);
   const [enrolledCourses, setEnrolledCourses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [progress, setProgress] = useState({});
   const [stats, setStats] = useState({
     totalCourses: 0,
     completedLessons: 0,
-    totalLessons: 0,
-    learningHours: 0
+    totalActiveLessons: 0,
+    learningHours: 0,
+    completionRate: 0
   });
   const navigate = useNavigate();
 
@@ -51,6 +55,85 @@ export default function StudentDashboard() {
 
     return () => unsubscribe();
   }, [navigate]);
+
+  // ========== PROGRESS CALCULATION FUNCTIONS ==========
+  
+  /**
+   * Calculate progress based on ACTIVE lessons only
+   */
+  const calculateActiveProgress = (enrollment, activeLessons) => {
+    if (!enrollment || !activeLessons || activeLessons.length === 0) return 0;
+    
+    // Count only completions that match ACTIVE lessons
+    const completedActive = activeLessons.filter(lesson => 
+      enrollment.completedLessons?.includes(lesson.id)
+    ).length;
+    
+    // Progress based ONLY on active lessons
+    return Math.round((completedActive / activeLessons.length) * 100);
+  };
+
+  /**
+   * Parse duration to minutes for learning hours calculation
+   */
+  const parseDurationToMinutes = (durationStr) => {
+    if (!durationStr) return 30; // Default fallback
+    
+    const str = durationStr.toString().toLowerCase();
+    
+    // Handle "X min read" format
+    if (str.includes('read')) {
+      const match = str.match(/(\d+)/);
+      return match ? parseInt(match[1]) : 30;
+    }
+    
+    let totalMinutes = 0;
+    
+    // Extract hours
+    const hoursMatch = str.match(/(\d+)\s*(?:hour|hr|h)/i);
+    if (hoursMatch) {
+      totalMinutes += parseInt(hoursMatch[1]) * 60;
+    }
+    
+    // Extract minutes
+    const minutesMatch = str.match(/(\d+)\s*(?:minute|min|m)(?!\s*read)/i);
+    if (minutesMatch) {
+      totalMinutes += parseInt(minutesMatch[1]);
+    }
+    
+    // If no hours or minutes found, try to extract just a number
+    if (totalMinutes === 0) {
+      const justNumber = str.match(/(\d+)/);
+      if (justNumber) {
+        totalMinutes = parseInt(justNumber[0]);
+      }
+    }
+    
+    return totalMinutes || 30; // Fallback to 30 if parsing fails
+  };
+
+  /**
+   * Calculate learning hours based on completed lesson durations
+   */
+  const calculateLearningHours = (completedLessons, allLessons) => {
+    let totalMinutes = 0;
+    let lessonsWithDuration = 0;
+    
+    completedLessons.forEach(lessonId => {
+      const lesson = allLessons.find(l => l.id === lessonId);
+      if (lesson) {
+        totalMinutes += parseDurationToMinutes(lesson.duration);
+        lessonsWithDuration++;
+      }
+    });
+    
+    // If no lessons have duration, estimate based on count
+    if (lessonsWithDuration === 0 && completedLessons.length > 0) {
+      totalMinutes = completedLessons.length * 30; // Default 30 min per lesson
+    }
+    
+    return Math.round((totalMinutes / 60) * 10) / 10; // Round to 1 decimal
+  };
 
   const fetchStudentData = async (userId) => {
     try {
@@ -76,28 +159,40 @@ export default function StudentDashboard() {
         enrollments.map(async (enrollment) => {
           const courseDoc = await getDoc(doc(db, "courses", enrollment.courseId));
           if (courseDoc.exists()) {
-            // Get lessons for this course
+            // Get ALL lessons for this course
             const lessonsRef = collection(db, "courses", enrollment.courseId, "lessons");
             const lessonsSnap = await getDocs(lessonsRef);
-            const lessons = lessonsSnap.docs.map(doc => ({
+            const allLessons = lessonsSnap.docs.map(doc => ({
               id: doc.id,
               ...doc.data()
             }));
 
-            // Calculate progress
-            const completedLessons = enrollment.completedLessons || [];
-            const progressPercent = lessons.length > 0 
-              ? Math.round((completedLessons.length / lessons.length) * 100)
-              : 0;
+            // Separate active and archived lessons
+            const activeLessons = allLessons.filter(lesson => lesson.status !== 'archived');
+            const archivedLessons = allLessons.filter(lesson => lesson.status === 'archived');
+
+            // Calculate progress using ONLY active lessons
+            const progressPercent = calculateActiveProgress(enrollment, activeLessons);
+            
+            // Count completed active lessons
+            const completedActiveLessons = activeLessons.filter(lesson => 
+              enrollment.completedLessons?.includes(lesson.id)
+            ).length;
 
             return {
               id: courseDoc.id,
               ...courseDoc.data(),
               enrollmentDate: enrollment.enrolledAt?.toDate?.() || new Date(),
               progress: progressPercent,
-              totalLessons: lessons.length,
-              completedLessons: completedLessons.length,
-              lastAccessed: enrollment.lastAccessed?.toDate?.() || null
+              activeLessons: activeLessons,
+              archivedLessons: archivedLessons,
+              totalActiveLessons: activeLessons.length,
+              completedActiveLessons: completedActiveLessons,
+              completedArchivedLessons: archivedLessons.filter(lesson => 
+                enrollment.completedLessons?.includes(lesson.id)
+              ).length,
+              lastAccessed: enrollment.lastAccessed?.toDate?.() || null,
+              completedLessonsList: enrollment.completedLessons || []
             };
           }
           return null;
@@ -107,23 +202,31 @@ export default function StudentDashboard() {
       const validCourses = coursesData.filter(course => course !== null);
       setEnrolledCourses(validCourses);
 
-      // Calculate stats
-      const totalLessons = validCourses.reduce((sum, course) => sum + course.totalLessons, 0);
-      const completedLessons = validCourses.reduce((sum, course) => sum + course.completedLessons, 0);
+      // Calculate stats based on ACTIVE lessons only
+      const totalActiveLessons = validCourses.reduce((sum, course) => sum + course.totalActiveLessons, 0);
+      const completedActiveLessons = validCourses.reduce((sum, course) => sum + course.completedActiveLessons, 0);
+      
+      // Calculate total learning hours
+      let totalMinutes = 0;
+      validCourses.forEach(course => {
+        const allCourseLessons = [...course.activeLessons, ...course.archivedLessons];
+        totalMinutes += calculateLearningHours(
+          course.completedLessonsList, 
+          allCourseLessons
+        ) * 60;
+      });
+      
+      const totalHours = Math.round((totalMinutes / 60) * 10) / 10;
       
       setStats({
         totalCourses: validCourses.length,
-        completedLessons,
-        totalLessons,
-        learningHours: Math.round(totalLessons * 0.5) // Estimate 30min per lesson
+        completedLessons: completedActiveLessons,
+        totalActiveLessons: totalActiveLessons,
+        learningHours: totalHours,
+        completionRate: totalActiveLessons > 0 
+          ? Math.round((completedActiveLessons / totalActiveLessons) * 100)
+          : 0
       });
-
-      // Store progress in state
-      const progressMap = {};
-      validCourses.forEach(course => {
-        progressMap[course.id] = course.progress;
-      });
-      setProgress(progressMap);
 
     } catch (error) {
       console.error("Error fetching student data:", error);
@@ -160,9 +263,22 @@ export default function StudentDashboard() {
         if (!completedLessons.includes(lessonId)) {
           const newCompletedLessons = [...completedLessons, lessonId];
           
+          // Find the course to get active lessons
+          const course = enrolledCourses.find(c => c.id === courseId);
+          const activeLessons = course?.activeLessons || [];
+          
+          // Calculate progress based on ACTIVE lessons only
+          const completedActive = activeLessons.filter(lesson => 
+            newCompletedLessons.includes(lesson.id)
+          ).length;
+          
+          const newProgress = activeLessons.length > 0 
+            ? Math.round((completedActive / activeLessons.length) * 100)
+            : 0;
+          
           await updateDoc(doc(db, "enrollments", enrollmentDoc.id), {
             completedLessons: newCompletedLessons,
-            progress: Math.round((newCompletedLessons.length / enrollmentData.totalLessons) * 100),
+            progress: newProgress,
             lastAccessed: serverTimestamp(),
             updatedAt: serverTimestamp()
           });
@@ -170,13 +286,24 @@ export default function StudentDashboard() {
           // Update local state
           setEnrolledCourses(prev => prev.map(course => {
             if (course.id === courseId) {
+              const newCompletedActive = course.completedActiveLessons + 1;
               return {
                 ...course,
-                completedLessons: course.completedLessons + 1,
-                progress: Math.round(((course.completedLessons + 1) / course.totalLessons) * 100)
+                completedActiveLessons: newCompletedActive,
+                progress: newProgress,
+                completedLessonsList: newCompletedLessons
               };
             }
             return course;
+          }));
+
+          // Update stats
+          setStats(prev => ({
+            ...prev,
+            completedLessons: prev.completedLessons + 1,
+            completionRate: prev.totalActiveLessons > 0
+              ? Math.round(((prev.completedLessons + 1) / prev.totalActiveLessons) * 100)
+              : 0
           }));
         }
       }
@@ -185,88 +312,116 @@ export default function StudentDashboard() {
     }
   };
 
-  const CourseCard = ({ course }) => (
-    <div className="bg-white rounded-xl shadow border overflow-hidden hover:shadow-md transition-shadow">
-      <div className="h-40 bg-gradient-to-r from-blue-500 to-indigo-600 relative">
-        {course.thumbnailUrl ? (
-          <img 
-            src={course.thumbnailUrl} 
-            alt={course.title}
-            className="w-full h-full object-cover"
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <BookOpen className="h-12 w-12 text-white opacity-80" />
-          </div>
-        )}
-        <div className="absolute top-3 right-3">
-          <span className="px-2 py-1 text-xs bg-white/90 text-gray-800 rounded">
-            {course.category}
-          </span>
-        </div>
-        <div className="absolute bottom-3 left-3">
-          <span className="px-2 py-1 text-xs bg-black/70 text-white rounded">
-            {course.level}
-          </span>
-        </div>
-      </div>
-      
-      <div className="p-4">
-        <h3 className="font-semibold text-gray-900 truncate">{course.title}</h3>
-        <p className="text-sm text-gray-600 mt-1 line-clamp-2">
-          {course.shortDescription || course.description?.substring(0, 100)}...
-        </p>
-        
-        <div className="mt-4">
-          <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>Progress</span>
-            <span>{course.progress}%</span>
-          </div>
-          <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-green-500 rounded-full transition-all duration-300"
-              style={{ width: `${course.progress}%` }}
+  const CourseCard = ({ course }) => {
+    // Get lesson type icons for display
+    const videoCount = course.activeLessons?.filter(l => l.lessonType === 'video' || l.videoUrl).length || 0;
+    const readingCount = course.activeLessons?.filter(l => l.lessonType === 'reading' || (!l.videoUrl && l.markdown)).length || 0;
+    
+    return (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-all hover:border-blue-200 group">
+        <div className="h-40 bg-gradient-to-r from-blue-500 to-indigo-600 relative">
+          {course.thumbnailUrl ? (
+            <img 
+              src={course.thumbnailUrl} 
+              alt={course.title}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <BookOpen className="h-12 w-12 text-white opacity-80" />
+            </div>
+          )}
+          <div className="absolute top-3 right-3">
+            <span className="px-2 py-1 text-xs font-medium bg-white/90 text-gray-800 rounded-full shadow-sm">
+              {course.category || 'Course'}
+            </span>
+          </div>
+          <div className="absolute bottom-3 left-3">
+            <span className="px-2 py-1 text-xs font-medium bg-black/70 text-white rounded-full">
+              {course.level || 'All Levels'}
+            </span>
           </div>
         </div>
         
-        <div className="flex items-center justify-between mt-4">
-          <div className="flex items-center gap-4 text-xs text-gray-500">
-            <div className="flex items-center gap-1">
-              <Play size={12} />
-              <span>{course.totalLessons} lessons</span>
+        <div className="p-5">
+          <h3 className="font-semibold text-gray-900 text-lg mb-2 line-clamp-1">{course.title}</h3>
+          <p className="text-sm text-gray-600 line-clamp-2 mb-4">
+            {course.shortDescription || course.description?.substring(0, 100) || 'No description available'}...
+          </p>
+          
+          {/* Lesson type badges */}
+          <div className="flex items-center gap-2 mb-4">
+            {videoCount > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-full">
+                <Video size={12} />
+                {videoCount} video{videoCount !== 1 ? 's' : ''}
+              </span>
+            )}
+            {readingCount > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-50 text-green-700 text-xs rounded-full">
+                <FileText size={12} />
+                {readingCount} reading{readingCount !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+          
+          <div className="mb-4">
+            <div className="flex justify-between text-xs text-gray-500 mb-1">
+              <span>Progress</span>
+              <span className="font-medium text-gray-700">{course.progress}%</span>
             </div>
-            <div className="flex items-center gap-1">
-              <Clock size={12} />
-              <span>{course.duration || "Self-paced"}</span>
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-green-500 rounded-full transition-all duration-300"
+                style={{ width: `${course.progress}%` }}
+              />
             </div>
           </div>
           
-          <button
-            onClick={() => navigate(`/course/${course.id}`)}
-            className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 flex items-center gap-1"
-          >
-            Continue <ChevronRight size={14} />
-          </button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 text-xs text-gray-500">
+              <div className="flex items-center gap-1">
+                <Play size={14} className="text-gray-400" />
+                <span>{course.completedActiveLessons}/{course.totalActiveLessons} completed</span>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => navigate(`/course/${course.id}`)}
+              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Continue
+              <ChevronRight size={16} className="ml-1" />
+            </button>
+          </div>
+
+          {/* Show archived lessons count if any */}
+          {course.completedArchivedLessons > 0 && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <p className="text-xs text-gray-500">
+                <span className="font-medium">{course.completedArchivedLessons}</span> completed {course.completedArchivedLessons === 1 ? 'lesson' : 'lessons'} from archived content
+              </p>
+            </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const EmptyState = () => (
-    <div className="bg-white rounded-2xl p-8 text-center shadow border">
-      <div className="h-16 w-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-        <BookOpen className="h-8 w-8 text-blue-600" />
+    <div className="bg-white rounded-2xl p-8 text-center shadow-sm border border-gray-200">
+      <div className="h-20 w-20 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
+        <BookOpen className="h-10 w-10 text-blue-500" />
       </div>
-      <h3 className="text-lg font-semibold text-gray-900 mb-2">
+      <h3 className="text-xl font-semibold text-gray-900 mb-2">
         No courses enrolled yet
       </h3>
-      <p className="text-gray-600 mb-6">
-        Browse available courses and start your learning journey!
+      <p className="text-gray-600 mb-6 max-w-md mx-auto">
+        Browse our catalog and start your learning journey today!
       </p>
       <button
         onClick={() => navigate("/courses")}
-        className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+        className="px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
       >
         Browse Courses
       </button>
@@ -276,7 +431,7 @@ export default function StudentDashboard() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-200 border-t-blue-600"></div>
       </div>
     );
   }
@@ -284,40 +439,35 @@ export default function StudentDashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200">
-        <div className="px-4 py-3 sm:px-6">
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+        <div className="px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
+            {/* Logo and Title */}
             <div className="flex items-center gap-3">
               <Link to="/" className="flex items-center space-x-3">
                 <img 
                   src="/logo4.png" 
                   alt="Pavoc LMS Logo" 
-                  className="h-15 w-15 rounded-xl object-cover"
+                  className="h-10 w-10 sm:h-12 sm:w-12 rounded-xl object-cover"
                 />
-                <span className="text-xl font-bold text-gray-900">Pavoc LMS</span>
-                <p className="text-xs text-gray-500">Student Dashboard</p>
+                <div className="hidden sm:block">
+                  <span className="text-xl font-bold text-gray-900">Pavoc LMS</span>
+                  <p className="text-xs text-gray-500">Student Dashboard</p>
+                </div>
               </Link>
             </div>
-            {/* <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-600 rounded-lg">
-                <BookOpen className="h-6 w-6 text-white" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">Bizika Learning</h1>
-                
-              </div>
-            </div> */}
             
+            {/* User Menu */}
             <div className="flex items-center gap-4">
-              <div className="hidden sm:flex items-center gap-3">
-                <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center">
-                  <span className="text-blue-600 font-medium">
-                    {user?.email?.[0]?.toUpperCase()}
+              <div className="flex items-center gap-3">
+                <div className="h-9 w-9 rounded-full bg-blue-100 flex items-center justify-center">
+                  <span className="text-blue-600 font-medium text-sm">
+                    {user?.email?.[0]?.toUpperCase() || 'S'}
                   </span>
                 </div>
                 <div className="hidden md:block">
                   <p className="text-sm font-medium text-gray-900">
-                    {user?.fullName || "Student"}
+                    {user?.fullName || 'Student'}
                   </p>
                   <p className="text-xs text-gray-500">{user?.email}</p>
                 </div>
@@ -325,87 +475,83 @@ export default function StudentDashboard() {
               
               <button
                 onClick={handleLogout}
-                className="flex items-center gap-2 px-3 py-1.5 text-gray-700 hover:bg-gray-100 rounded-lg"
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
               >
                 <LogOut size={16} />
-                <span className="hidden sm:inline text-sm">Logout</span>
+                <span className="hidden sm:inline">Logout</span>
               </button>
             </div>
           </div>
         </div>
       </header>
 
-      <main className="p-4 sm:p-6">
+      <main className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Welcome Banner */}
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 text-white mb-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between">
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 sm:p-8 text-white mb-8">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="text-2xl font-bold mb-2">
-                Welcome back, {user?.firstName || "Student"}!
+              <h2 className="text-2xl sm:text-3xl font-bold mb-2">
+                Welcome back, {user?.firstName || 'Student'}! 👋
               </h2>
-              <p className="text-blue-100">
-                Continue your learning journey. You have {stats.totalCourses} enrolled courses.
+              <p className="text-blue-100 text-sm sm:text-base">
+                Continue your learning journey. You have {stats.totalCourses} enrolled course{stats.totalCourses !== 1 ? 's' : ''}.
               </p>
             </div>
-            <div className="mt-4 sm:mt-0">
-              <div className="text-3xl font-bold">
-                {stats.completedLessons}/{stats.totalLessons}
+            <div className="sm:text-right">
+              <div className="text-3xl sm:text-4xl font-bold">
+                {stats.completedLessons}/{stats.totalActiveLessons}
               </div>
-              <div className="text-sm text-blue-200">Lessons completed</div>
+              <div className="text-sm text-blue-200">Active lessons completed</div>
             </div>
           </div>
         </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-xl p-4 shadow border">
+        {/* Stats Cards - Responsive Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-8">
+          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:border-blue-200 transition-colors">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Enrolled Courses</p>
-                <p className="text-2xl font-bold text-gray-900 mt-1">{stats.totalCourses}</p>
+                <p className="text-sm text-gray-600 mb-1">Enrolled Courses</p>
+                <p className="text-2xl sm:text-3xl font-bold text-gray-900">{stats.totalCourses}</p>
               </div>
-              <div className="p-2 bg-blue-100 rounded-lg">
+              <div className="p-3 bg-blue-50 rounded-lg">
                 <BookOpen className="h-6 w-6 text-blue-600" />
               </div>
             </div>
           </div>
           
-          <div className="bg-white rounded-xl p-4 shadow border">
+          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:border-green-200 transition-colors">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Completed Lessons</p>
-                <p className="text-2xl font-bold text-green-600 mt-1">{stats.completedLessons}</p>
+                <p className="text-sm text-gray-600 mb-1">Completed Lessons</p>
+                <p className="text-2xl sm:text-3xl font-bold text-green-600">{stats.completedLessons}</p>
               </div>
-              <div className="p-2 bg-green-100 rounded-lg">
+              <div className="p-3 bg-green-50 rounded-lg">
                 <CheckCircle className="h-6 w-6 text-green-600" />
               </div>
             </div>
           </div>
           
-          <div className="bg-white rounded-xl p-4 shadow border">
+          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:border-purple-200 transition-colors">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Learning Hours</p>
-                <p className="text-2xl font-bold text-purple-600 mt-1">{stats.learningHours}h</p>
+                <p className="text-sm text-gray-600 mb-1">Learning Hours</p>
+                <p className="text-2xl sm:text-3xl font-bold text-purple-600">{stats.learningHours}h</p>
               </div>
-              <div className="p-2 bg-purple-100 rounded-lg">
+              <div className="p-3 bg-purple-50 rounded-lg">
                 <Clock className="h-6 w-6 text-purple-600" />
               </div>
             </div>
           </div>
           
-          <div className="bg-white rounded-xl p-4 shadow border">
+          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:border-orange-200 transition-colors">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Completion Rate</p>
-                <p className="text-2xl font-bold text-orange-600 mt-1">
-                  {stats.totalLessons > 0 
-                    ? `${Math.round((stats.completedLessons / stats.totalLessons) * 100)}%`
-                    : "0%"}
-                </p>
+                <p className="text-sm text-gray-600 mb-1">Completion Rate</p>
+                <p className="text-2xl sm:text-3xl font-bold text-orange-600">{stats.completionRate}%</p>
               </div>
-              <div className="p-2 bg-orange-100 rounded-lg">
-                <Award className="h-6 w-6 text-orange-600" />
+              <div className="p-3 bg-orange-50 rounded-lg">
+                <TrendingUp className="h-6 w-6 text-orange-600" />
               </div>
             </div>
           </div>
@@ -413,7 +559,16 @@ export default function StudentDashboard() {
 
         {/* My Courses Section */}
         <div className="mb-8">
-          
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg sm:text-xl font-semibold text-gray-900">My Courses</h3>
+            <button 
+              onClick={() => navigate("/courses")}
+              className="text-sm text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
+            >
+              Browse All
+              <ChevronRight size={16} />
+            </button>
+          </div>
           
           {enrolledCourses.length === 0 ? (
             <EmptyState />
@@ -426,22 +581,25 @@ export default function StudentDashboard() {
           )}
         </div>
 
-        {/* Recent Activity */}
+        {/* Continue Learning Section */}
         {enrolledCourses.length > 0 && (
-          <div className="bg-white rounded-xl shadow border p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Continue Learning</h3>
-            <div className="space-y-4">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <h3 className="text-lg sm:text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <Sparkles size={20} className="text-yellow-500" />
+              Continue Learning
+            </h3>
+            <div className="space-y-3">
               {enrolledCourses
-                .sort((a, b) => b.lastAccessed - a.lastAccessed)
+                .sort((a, b) => (b.lastAccessed?.getTime() || 0) - (a.lastAccessed?.getTime() || 0))
                 .slice(0, 3)
                 .map(course => (
                   <div 
                     key={course.id}
-                    className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-lg cursor-pointer"
+                    className="flex flex-col sm:flex-row sm:items-center justify-between p-4 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors border border-transparent hover:border-gray-200"
                     onClick={() => navigate(`/course/${course.id}`)}
                   >
-                    <div className="flex items-center">
-                      <div className="h-12 w-12 rounded-lg bg-gray-200 flex items-center justify-center">
+                    <div className="flex items-center mb-3 sm:mb-0">
+                      <div className="h-12 w-12 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
                         {course.thumbnailUrl ? (
                           <img 
                             src={course.thumbnailUrl} 
@@ -452,36 +610,39 @@ export default function StudentDashboard() {
                           <BookOpen className="h-6 w-6 text-gray-400" />
                         )}
                       </div>
-                      <div className="ml-4">
-                        <div className="font-medium text-gray-900">{course.title}</div>
+                      <div className="ml-4 flex-1 min-w-0">
+                        <div className="font-medium text-gray-900 truncate">{course.title}</div>
                         <div className="text-sm text-gray-500">
-                          {course.completedLessons} of {course.totalLessons} lessons completed
+                          {course.completedActiveLessons} of {course.totalActiveLessons} active lessons completed
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4">
+                    
+                    <div className="flex items-center justify-between sm:justify-end sm:gap-6">
                       <div className="text-right">
                         <div className="text-sm font-medium text-gray-900">{course.progress}%</div>
                         <div className="text-xs text-gray-500">Progress</div>
                       </div>
-                      <ChevronRight className="text-gray-400" />
+                      <ChevronRight className="text-gray-400 ml-2 flex-shrink-0" />
                     </div>
-                    
                   </div>
-                  
                 ))}
-                
             </div>
-            
           </div>
-          
         )}
-        <button 
-        onClick={() => navigate("/courses")}
-        className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 mt-6"
-      >
-        Browse Courses
-      </button>
+
+        {/* Quick Action Button for Mobile */}
+        {enrolledCourses.length === 0 && (
+          <div className="mt-6 text-center sm:hidden">
+            <button 
+              onClick={() => navigate("/courses")}
+              className="inline-flex items-center px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Browse Courses
+              <ChevronRight size={18} className="ml-2" />
+            </button>
+          </div>
+        )}
       </main>
     </div>
   );
