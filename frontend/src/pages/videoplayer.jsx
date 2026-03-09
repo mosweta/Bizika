@@ -39,6 +39,9 @@ const EdpuzzleVideoPlayer = ({
   const containerRef = useRef(null);
   const controlsTimeoutRef = useRef(null);
   const progressIntervalRef = useRef(null);
+  const hideControlsTimerRef = useRef(null);
+  const progressBarRef = useRef(null);
+  const isDraggingRef = useRef(false);
   
   // Function refs to prevent re-renders
   const onProgressUpdateRef = useRef(onProgressUpdate);
@@ -59,8 +62,25 @@ const EdpuzzleVideoPlayer = ({
   const [showControls, setShowControls] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [isMobile, setIsMobile] = useState(false);
+  const [touchStartTime, setTouchStartTime] = useState(null);
+  const [touchStartX, setTouchStartX] = useState(null);
+  const [showCenterPlayButton, setShowCenterPlayButton] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragPosition, setDragPosition] = useState(0);
   
   const playbackRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+  
+  // Check if mobile
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
   
   // Update function refs when props change
   useEffect(() => {
@@ -73,6 +93,8 @@ const EdpuzzleVideoPlayer = ({
   useEffect(() => {
     hasEndedRef.current = false;
     hasAutoCompletedRef.current = false;
+    // Show center play button for new video
+    setShowCenterPlayButton(true);
   }, [videoUrl]);
 
   // Extract YouTube video ID
@@ -95,7 +117,7 @@ const EdpuzzleVideoPlayer = ({
       rel: 0,
       modestbranding: 1,
       playsinline: 1,
-      fs: 1,
+      fs: 0,
       disablekb: 0
     },
   };
@@ -115,7 +137,10 @@ const EdpuzzleVideoPlayer = ({
     // Update play/pause state
     setIsPlaying(playerState === 1);
     
-    // Handle video end - prevent duplicate calls
+    // Hide center play button when playing, show when paused
+    setShowCenterPlayButton(playerState !== 1);
+    
+    // Handle video end
     if (playerState === 0 && !hasEndedRef.current) {
       hasEndedRef.current = true;
       hasAutoCompletedRef.current = true;
@@ -145,9 +170,9 @@ const EdpuzzleVideoPlayer = ({
     console.error('YouTube Player Error:', error);
   }, []);
 
-  // Progress tracking - FIXED: No infinite loops
+  // Progress tracking
   useEffect(() => {
-    if (!isPlaying) {
+    if (!isPlaying || isDragging) {
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current);
         progressIntervalRef.current = null;
@@ -179,7 +204,7 @@ const EdpuzzleVideoPlayer = ({
             onProgressUpdateRef.current(lessonId, progress);
           }
           
-          // Auto-complete at 99% - prevent duplicate calls
+          // Auto-complete at 99%
           if (progress >= 99 && 
               autoComplete && 
               markLessonCompleteRef.current && 
@@ -211,15 +236,17 @@ const EdpuzzleVideoPlayer = ({
         progressIntervalRef.current = null;
       }
     };
-  }, [isPlaying, lessonId, autoComplete, isLessonCompleted]);
+  }, [isPlaying, lessonId, autoComplete, isLessonCompleted, isDragging]);
 
   // Player controls
   const togglePlay = useCallback(() => {
     if (playerRef.current) {
       if (isPlaying) {
         playerRef.current.pauseVideo();
+        setShowCenterPlayButton(true);
       } else {
         playerRef.current.playVideo();
+        setShowCenterPlayButton(false);
       }
     }
   }, [isPlaying]);
@@ -227,6 +254,7 @@ const EdpuzzleVideoPlayer = ({
   const seekTo = useCallback((seconds) => {
     if (playerRef.current) {
       playerRef.current.seekTo(seconds, true);
+      setCurrentTime(seconds);
     }
   }, []);
 
@@ -259,31 +287,25 @@ const EdpuzzleVideoPlayer = ({
     }
   }, [isMuted]);
 
-  // Fullscreen
-  // Fullscreen with orientation lock
+  // Fullscreen - only one button now
   const toggleFullscreen = useCallback(async () => {
     if (!containerRef.current) return;
     
     try {
       if (!document.fullscreenElement) {
-        // Enter fullscreen
         await containerRef.current.requestFullscreen();
         
-        // Lock orientation to landscape on mobile
         if (window.screen.orientation && window.screen.orientation.lock) {
           try {
             await window.screen.orientation.lock('landscape');
           } catch (err) {
-            console.log('Orientation lock not supported or already locked:', err);
+            console.log('Orientation lock not supported:', err);
           }
         }
       } else {
-        // Unlock orientation first
         if (window.screen.orientation && window.screen.orientation.unlock) {
           await window.screen.orientation.unlock();
         }
-        
-        // Exit fullscreen
         await document.exitFullscreen();
       }
     } catch (error) {
@@ -334,58 +356,147 @@ const EdpuzzleVideoPlayer = ({
 
   const progressPercentage = duration ? (currentTime / duration) * 100 : 0;
 
-  const handleProgressClick = useCallback((e) => {
-    if (!duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const percentage = clickX / rect.width;
-    const newTime = duration * percentage;
-    seekTo(newTime);
+  // Draggable progress bar handlers
+  const handleProgressMouseDown = useCallback((e) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    setIsDragging(true);
+    
+    const updateDragPosition = (clientX) => {
+      if (!progressBarRef.current || !duration) return;
+      
+      const rect = progressBarRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+      const percentage = (x / rect.width) * 100;
+      setDragPosition(percentage);
+    };
+
+    const handleMouseMove = (e) => {
+      if (!isDraggingRef.current) return;
+      updateDragPosition(e.clientX);
+    };
+
+    const handleMouseUp = (e) => {
+      if (!isDraggingRef.current || !duration) return;
+      
+      const rect = progressBarRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const percentage = x / rect.width;
+      const newTime = duration * percentage;
+      
+      seekTo(newTime);
+      
+      isDraggingRef.current = false;
+      setIsDragging(false);
+      
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [duration, seekTo]);
+
+  const handleProgressTouchStart = useCallback((e) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    setIsDragging(true);
+    
+    const updateTouchPosition = (clientX) => {
+      if (!progressBarRef.current || !duration) return;
+      
+      const rect = progressBarRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+      const percentage = (x / rect.width) * 100;
+      setDragPosition(percentage);
+    };
+
+    const handleTouchMove = (e) => {
+      if (!isDraggingRef.current) return;
+      e.preventDefault();
+      updateTouchPosition(e.touches[0].clientX);
+    };
+
+    const handleTouchEnd = (e) => {
+      if (!isDraggingRef.current || !duration) return;
+      
+      const rect = progressBarRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.changedTouches[0].clientX - rect.left, rect.width));
+      const percentage = x / rect.width;
+      const newTime = duration * percentage;
+      
+      seekTo(newTime);
+      
+      isDraggingRef.current = false;
+      setIsDragging(false);
+      
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+    };
+
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd);
   }, [duration, seekTo]);
 
   // Control visibility timeout
-  useEffect(() => {
-    if (!showControls || !isPlaying) return;
-    
-    const timer = setTimeout(() => {
-      setShowControls(false);
-    }, 3000);
-
-    return () => clearTimeout(timer);
-  }, [showControls, isPlaying]);
-
   const resetControlsTimeout = useCallback(() => {
     setShowControls(true);
     
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current);
+    if (hideControlsTimerRef.current) {
+      clearTimeout(hideControlsTimerRef.current);
     }
     
-    controlsTimeoutRef.current = setTimeout(() => {
-      setShowControls(false);
-    }, 3000);
-  }, []);
+    if (isPlaying && !isDragging) {
+      hideControlsTimerRef.current = setTimeout(() => {
+        setShowControls(false);
+        if (!showSettings) {
+          setShowControls(false);
+        }
+      }, 3000);
+    }
+  }, [isPlaying, showSettings, isDragging]);
 
-  // Click outside settings menu
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (showSettings && !e.target.closest('.settings-menu') && !e.target.closest('.settings-button')) {
-        setShowSettings(false);
+  // Touch events for mobile
+  const handleTouchStart = useCallback((e) => {
+    setTouchStartTime(Date.now());
+    setTouchStartX(e.touches[0].clientX);
+    resetControlsTimeout();
+  }, [resetControlsTimeout]);
+
+  const handleTouchEnd = useCallback((e) => {
+    if (!touchStartTime || !touchStartX) return;
+    
+    const touchEndTime = Date.now();
+    const touchEndX = e.changedTouches[0].clientX;
+    const touchDuration = touchEndTime - touchStartTime;
+    const touchDistance = touchEndX - touchStartX;
+    
+    // Short tap (less than 200ms) - toggle play/pause
+    if (touchDuration < 200 && Math.abs(touchDistance) < 20) {
+      togglePlay();
+    }
+    
+    // Swipe left/right for navigation
+    if (Math.abs(touchDistance) > 50) {
+      if (touchDistance > 0 && hasPreviousLesson) {
+        onPreviousLesson?.();
+      } else if (touchDistance < 0 && hasNextLesson) {
+        onNextLesson?.();
       }
-    };
+    }
+    
+    setTouchStartTime(null);
+    setTouchStartX(null);
+  }, [touchStartTime, touchStartX, togglePlay, hasPreviousLesson, hasNextLesson, onPreviousLesson, onNextLesson]);
 
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [showSettings]);
-
-  // Cleanup
+  // Cleanup timers
   useEffect(() => {
     return () => {
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current);
       }
-      if (controlsTimeoutRef.current) {
-        clearTimeout(controlsTimeoutRef.current);
+      if (hideControlsTimerRef.current) {
+        clearTimeout(hideControlsTimerRef.current);
       }
     };
   }, []);
@@ -403,15 +514,18 @@ const EdpuzzleVideoPlayer = ({
     );
   }
 
+  const displayProgress = isDragging ? dragPosition : progressPercentage;
+
   return (
     <div 
       ref={containerRef}
       className="relative bg-black rounded-xl overflow-hidden group select-none"
       onMouseMove={resetControlsTimeout}
-      onTouchStart={resetControlsTimeout}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* YouTube Player */}
+      {/* YouTube Player - fixed within container */}
       <div className="aspect-video">
         <YouTube
           videoId={videoId}
@@ -424,42 +538,82 @@ const EdpuzzleVideoPlayer = ({
         />
       </div>
 
-      {/* Fullscreen Button */}
-      {showControls && (
+      {/* YouTube-style Center Play Button - stays within video */}
+      {(showCenterPlayButton || (!isPlaying && showControls)) && (
         <button
-          onClick={toggleFullscreen}
-          className="absolute top-4 right-4 p-2 text-white hover:bg-white hover:bg-opacity-20 rounded-full backdrop-blur-sm z-20"
-          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={(e) => {
+            e.stopPropagation();
+            togglePlay();
+          }}
+          className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 
+                     w-16 h-16 sm:w-20 sm:h-20 bg-red-600 hover:bg-red-700
+                     rounded-full flex items-center justify-center text-white 
+                     transition-all duration-200 z-30 shadow-2xl
+                     hover:scale-110 active:scale-95 group"
+          aria-label={isPlaying ? "Pause" : "Play"}
         >
-          {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
+          {/* Outer ring effect */}
+          <div className="absolute inset-0 rounded-full bg-red-600 opacity-75 
+                        group-hover:opacity-100 transition-opacity animate-ping-slow"></div>
+          
+          {/* Inner button */}
+          <div className="relative bg-red-600 rounded-full w-full h-full 
+                        flex items-center justify-center shadow-xl">
+            {isPlaying ? (
+              <Pause size={isMobile ? 28 : 32} />
+            ) : (
+              <Play size={isMobile ? 28 : 32} className="ml-1" />
+            )}
+          </div>
         </button>
       )}
 
-      {/* Top Controls */}
+      {/* Single Fullscreen Button - positioned absolutely within video container */}
+      {(showControls || isMobile) && (
+        <button
+          onClick={toggleFullscreen}
+          className="absolute top-2 right-2 sm:top-4 sm:right-4 p-2 sm:p-2.5 
+                     text-white bg-black bg-opacity-60 hover:bg-red-600 
+                     rounded-full backdrop-blur-sm z-20 transition-all duration-200
+                     active:bg-opacity-90"
+          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          {isFullscreen ? <Minimize size={isMobile ? 18 : 20} /> : <Maximize size={isMobile ? 18 : 20} />}
+        </button>
+      )}
+
+      {/* Top Controls - positioned within video */}
       {showControls && (
-        <div className="absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black to-transparent z-10">
+        <div className="absolute top-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-b from-black/90 to-transparent z-10">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
               {hasPreviousLesson && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onPreviousLesson?.();
                   }}
-                  className="p-2 bg-white bg-opacity-20 text-white rounded-full hover:bg-opacity-30 backdrop-blur-sm"
+                  className="p-1.5 sm:p-2 bg-black bg-opacity-50 text-white 
+                             rounded-full hover:bg-red-600 backdrop-blur-sm
+                             active:bg-opacity-90 transition-all"
                   title="Previous lesson"
                 >
-                  <ChevronLeft size={20} />
+                  <ChevronLeft size={isMobile ? 16 : 20} />
                 </button>
               )}
               
               <div className="text-white">
-                <h3 className="font-medium text-sm sm:text-base truncate max-w-[180px] sm:max-w-md">
+                <h3 className="font-medium text-xs sm:text-base truncate max-w-[150px] sm:max-w-md">
                   {lessonTitle}
                 </h3>
-                <div className="flex items-center gap-2 text-xs text-gray-300">
-                  <Clock size={12} />
+                <div className="flex items-center gap-1 sm:gap-2 text-2xs sm:text-xs text-gray-300">
+                  <Clock size={isMobile ? 10 : 12} />
                   <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
+                  {isDragging && (
+                    <span className="text-yellow-400">
+                      {Math.round(displayProgress)}%
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -467,128 +621,283 @@ const EdpuzzleVideoPlayer = ({
         </div>
       )}
 
-      {/* Bottom Controls */}
+      {/* Bottom Controls - positioned within video */}
       {showControls && (
-        <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black to-transparent z-10">
-          {/* Progress Bar */}
-          <div className="relative mb-4 cursor-pointer" onClick={handleProgressClick}>
-            <div className="w-full h-2 bg-gray-600/70 rounded-lg overflow-hidden">
+        <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 to-transparent z-10">
+          {/* Draggable Progress Bar */}
+          <div 
+            ref={progressBarRef}
+            className="relative mb-2 sm:mb-4 cursor-pointer group touch-none" 
+            onMouseDown={handleProgressMouseDown}
+            onTouchStart={handleProgressTouchStart}
+          >
+            {/* Background bar */}
+            <div className="w-full h-2 sm:h-2.5 bg-gray-600/50 rounded-full overflow-hidden">
+              {/* Progress fill */}
               <div 
-                className="h-full bg-red-600 transition-all duration-200"
-                style={{ width: `${progressPercentage}%` }}
+                className="h-full bg-red-600 rounded-full transition-all duration-75"
+                style={{ width: `${displayProgress}%` }}
               />
             </div>
+            
+            {/* Progress handle - shows on hover/drag */}
+            <div 
+              className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 sm:w-4 sm:h-4 
+                         bg-red-600 rounded-full shadow-lg border-2 border-white
+                         transition-opacity duration-200 ${
+                           isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                         }`}
+              style={{ left: `calc(${displayProgress}% - ${isMobile ? 6 : 8}px)` }}
+            />
+            
+            {/* Time preview on hover */}
+            {!isDragging && showControls && (
+              <div 
+                className="absolute -top-6 transform -translate-x-1/2 bg-black/80 
+                           text-white text-xs px-2 py-1 rounded opacity-0 
+                           group-hover:opacity-100 transition-opacity pointer-events-none"
+                style={{ left: `${displayProgress}%` }}
+              >
+                {formatTime((displayProgress / 100) * duration)}
+              </div>
+            )}
           </div>
 
           {/* Control Buttons */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 sm:gap-3">
               <button
                 onClick={togglePlay}
-                className="p-2 text-white hover:bg-white hover:bg-opacity-20 rounded-full"
+                className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                           rounded-full active:bg-opacity-30 transition-all"
                 title={isPlaying ? "Pause" : "Play"}
               >
-                {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+                {isPlaying ? <Pause size={isMobile ? 18 : 20} /> : <Play size={isMobile ? 18 : 20} />}
               </button>
               
               <button
                 onClick={() => skip(-10)}
-                className="p-2 text-white hover:bg-white hover:bg-opacity-20 rounded-full"
+                className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                           rounded-full active:bg-opacity-30 transition-all"
                 title="Rewind 10 seconds"
               >
-                <SkipBack size={20} />
+                <SkipBack size={isMobile ? 16 : 18} />
               </button>
               
               <button
                 onClick={() => skip(10)}
-                className="p-2 text-white hover:bg-white hover:bg-opacity-20 rounded-full"
+                className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                           rounded-full active:bg-opacity-30 transition-all"
                 title="Forward 10 seconds"
               >
-                <SkipForward size={20} />
+                <SkipForward size={isMobile ? 16 : 18} />
               </button>
               
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={toggleMute}
-                  className="p-2 text-white hover:bg-white hover:bg-opacity-20 rounded-full"
-                  title={isMuted ? "Unmute" : "Mute"}
-                >
-                  {isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
-                </button>
-                
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={volume}
-                  onChange={handleVolumeChange}
-                  className="w-20 accent-white"
-                  title="Volume"
-                />
-              </div>
+              {!isMobile && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={toggleMute}
+                    className="p-2 text-white hover:bg-red-600 rounded-full"
+                    title={isMuted ? "Unmute" : "Mute"}
+                  >
+                    {isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
+                  </button>
+                  
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={volume}
+                    onChange={handleVolumeChange}
+                    className="w-16 sm:w-20 accent-red-600"
+                    title="Volume"
+                  />
+                </div>
+              )}
             </div>
             
-            {/* Right side */}
-            <div className="flex items-center gap-2">
+            {/* Right side - NO fullscreen button here anymore */}
+            <div className="flex items-center gap-1 sm:gap-2">
               {hasNextLesson && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onNextLesson?.();
                   }}
-                  className="p-2 text-white hover:bg-white hover:bg-opacity-20 rounded-full"
+                  className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                             rounded-full active:bg-opacity-30 transition-all"
                   title="Next lesson"
                 >
-                  <ChevronRight size={20} />
+                  <ChevronRight size={isMobile ? 16 : 20} />
                 </button>
               )}
               
               <button
                 onClick={() => setShowSettings(!showSettings)}
-                className={`settings-button p-2 rounded-full ${showSettings ? 'bg-blue-600 text-white' : 'text-white hover:bg-white hover:bg-opacity-20'}`}
+                className={`p-1.5 sm:p-2 rounded-full transition-all ${
+                  showSettings 
+                    ? 'bg-red-600 text-white' 
+                    : 'text-white hover:bg-red-600 active:bg-opacity-30'
+                }`}
                 title="Settings"
               >
-                <Settings size={20} />
+                <Settings size={isMobile ? 16 : 20} />
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Settings Menu */}
-      {showSettings && (
-        <div className="settings-menu absolute bottom-16 right-4 bg-gray-900 text-white rounded-lg shadow-2xl p-4 min-w-[200px] z-20"
-             onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center justify-between mb-4">
-            <h4 className="font-medium">Settings</h4>
-            <button
-              onClick={() => setShowSettings(false)}
-              className="p-1 hover:bg-gray-800 rounded"
-              aria-label="Close settings"
-            >
-              <X size={16} />
-            </button>
+      {/* Minimal Mobile Settings Menu - Smaller and more compact */}
+      {showSettings && isMobile && (
+        <div 
+          className="absolute inset-x-0 bottom-0 bg-gray-900/95 backdrop-blur-md text-white 
+                     rounded-t-xl shadow-2xl z-40 border-t border-gray-800 animate-slide-up"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Handle bar */}
+          <div className="flex justify-center pt-2 pb-1">
+            <div className="w-10 h-1 bg-gray-700 rounded-full"></div>
           </div>
           
-          <div className="mb-4">
-            <h5 className="text-sm text-gray-400 mb-2">Playback Speed</h5>
-            <div className="space-y-1">
+          <div className="px-3 pb-4">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="font-medium text-sm">Speed</h4>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="p-1.5 -mr-1.5 text-gray-400 hover:text-white rounded-full"
+                aria-label="Close settings"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            
+            {/* Speed options - horizontal scroll, smaller */}
+            <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
               {playbackRates.map((rate) => (
                 <button
                   key={rate}
                   onClick={() => changePlaybackRate(rate)}
-                  className={`w-full text-left px-3 py-2 rounded text-sm ${playbackRate === rate ? 'bg-blue-600' : 'hover:bg-gray-800'}`}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium
+                             transition-colors ${
+                    playbackRate === rate 
+                      ? 'bg-red-600 text-white' 
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                  }`}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1">
                     <span>{rate === 1 ? 'Normal' : `${rate}x`}</span>
-                    {playbackRate === rate && <Check size={14} />}
+                    {playbackRate === rate && <Check size={12} />}
                   </div>
                 </button>
               ))}
             </div>
+            
+            {/* Volume control - more compact */}
+            <div className="mt-3 pt-2 border-t border-gray-800">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={toggleMute}
+                  className="p-1.5 text-white hover:bg-gray-800 rounded-lg"
+                >
+                  {isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={volume}
+                  onChange={handleVolumeChange}
+                  className="flex-1 h-1.5 accent-red-600"
+                  style={{ 
+                    background: `linear-gradient(to right, #ef4444 ${volume}%, #4b5563 ${volume}%)`
+                  }}
+                />
+                <span className="text-xs text-gray-400 min-w-[35px]">{volume}%</span>
+              </div>
+            </div>
           </div>
         </div>
       )}
+
+      {/* Desktop Settings Menu - Red themed, more compact */}
+      {showSettings && !isMobile && (
+        <div 
+          className="absolute bottom-16 right-4 w-48 bg-gray-900 text-white 
+                     rounded-lg shadow-2xl p-3 z-20 border border-gray-800"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="font-medium text-xs uppercase tracking-wider text-gray-400">Speed</h4>
+            <button
+              onClick={() => setShowSettings(false)}
+              className="p-1 hover:bg-gray-800 rounded-lg transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          
+          <div className="space-y-1">
+            {playbackRates.map((rate) => (
+              <button
+                key={rate}
+                onClick={() => changePlaybackRate(rate)}
+                className={`w-full text-left px-2 py-1.5 rounded-md text-sm 
+                           transition-colors ${
+                  playbackRate === rate 
+                    ? 'bg-red-600 text-white' 
+                    : 'hover:bg-gray-800 text-gray-300'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span>{rate === 1 ? 'Normal' : `${rate}x`}</span>
+                  {playbackRate === rate && <Check size={12} />}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile hint */}
+      {isMobile && showControls && !isDragging && (
+        <div className="absolute bottom-20 left-0 right-0 flex justify-center pointer-events-none">
+          <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-sm">
+            Tap to play/pause • Swipe ← → for lessons
+          </div>
+        </div>
+      )}
+
+      {/* Add animation keyframes */}
+      <style jsx>{`
+        @keyframes ping-slow {
+          75%, 100% {
+            transform: scale(1.2);
+            opacity: 0;
+          }
+        }
+        .animate-ping-slow {
+          animation: ping-slow 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+        @keyframes slide-up {
+          from {
+            transform: translateY(100%);
+          }
+          to {
+            transform: translateY(0);
+          }
+        }
+        .animate-slide-up {
+          animation: slide-up 0.2s ease-out;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .no-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+      `}</style>
     </div>
   );
 };
