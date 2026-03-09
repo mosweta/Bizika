@@ -1,8 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
-// src/components/admin/CourseManager.jsx
 import { useState, useEffect, useRef } from "react";
 import { db, storage, auth } from "../firebase/config";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import DurationPicker from "./Admin/durationPicker";
 import {
   collection,
   addDoc,
@@ -19,6 +19,23 @@ import {
   where
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+
+import mammoth from 'mammoth';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Link from '@tiptap/extension-link';
+import Image from '@tiptap/extension-image';
+import Typography from '@tiptap/extension-typography';
+import Placeholder from '@tiptap/extension-placeholder';
+import TextAlign from '@tiptap/extension-text-align';
+import { Color } from '@tiptap/extension-color';
+import { TextStyle } from '@tiptap/extension-text-style';
+import Highlight from '@tiptap/extension-highlight';
+import TaskList from '@tiptap/extension-task-list';
+import TaskItem from '@tiptap/extension-task-item';
+
 import { 
   Plus, 
   Edit2, 
@@ -48,11 +65,36 @@ import {
   LogOut,
   Shield,
   User,
-  Video
+  Video,
+  FileUp,
+  FileDown,
+  Bold, Italic, Underline, Strikethrough,
+   ListOrdered, Quote, Code,
+  Link as LinkIcon,
+  Heading1, Heading2, Heading3, Heading4,
+  AlignLeft, AlignCenter, AlignRight, AlignJustify,
+  Palette, Highlighter, ListChecks,
+  Undo, Redo, Minus, Square,
+  Sparkles,
 } from "lucide-react";
 
-// Import the correct R2Service
+// Import R2Service
 import R2Service from "../services/r2service";
+
+import TurndownService from 'turndown';
+// Set up PDF.js worker
+
+// ========== PDF.js Setup ==========
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Configure PDF.js worker - use CDN for reliability in Vite
+try {
+  // Use a reliable CDN URL that definitely exists
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  console.log('✅ PDF.js worker configured with CDN');
+} catch (error) {
+  console.error('❌ PDF.js worker setup failed:', error);
+}
 
 
 // File type mapping
@@ -69,20 +111,19 @@ const FILE_TYPES = {
   jpeg: { icon: ImageIcon, color: "text-pink-600", bgColor: "bg-pink-50" },
   png: { icon: ImageIcon, color: "text-pink-600", bgColor: "bg-pink-50" },
   gif: { icon: ImageIcon, color: "text-pink-600", bgColor: "bg-pink-50" },
-  mp4: { icon: File, color: "text-indigo-600", bgColor: "bg-indigo-50" },
-  webm: { icon: File, color: "text-indigo-600", bgColor: "bg-indigo-50" },
+  mp4: { icon: Video, color: "text-indigo-600", bgColor: "bg-indigo-50" },
+  webm: { icon: Video, color: "text-indigo-600", bgColor: "bg-indigo-50" },
   default: { icon: File, color: "text-gray-600", bgColor: "bg-gray-50" }
 };
-
 // Image compression utility
 const compressImage = (file, options = {}) => {
   return new Promise((resolve) => {
     resolve(file);
   });
 };
-
 // Helper function to get file type
 const getFileType = (filename) => {
+  if (!filename) return 'default';
   const ext = filename.split('.').pop().toLowerCase();
   return FILE_TYPES[ext] ? ext : 'default';
 };
@@ -92,24 +133,22 @@ const FileIcon = ({ type, className = "h-5 w-5" }) => {
   const IconComponent = FILE_TYPES[type]?.icon || File;
   return <IconComponent className={className} />;
 };
+
 // Helper function to validate video URLs
 const validateVideoUrl = (url) => {
   if (!url) return { valid: true, type: null };
   
-  // YouTube patterns
   const youtubePatterns = [
     /^https?:\/\/(www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/,
     /^https?:\/\/(www\.)?youtu\.be\/([a-zA-Z0-9_-]+)/,
     /^https?:\/\/(www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]+)/
   ];
   
-  // Vimeo patterns
   const vimeoPatterns = [
     /^https?:\/\/(www\.)?vimeo\.com\/([0-9]+)/,
     /^https?:\/\/(www\.)?vimeo\.com\/\/([0-9]+)/
   ];
   
-  // Direct video file patterns
   const videoFilePatterns = [
     /^https?:\/\/.*\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i
   ];
@@ -126,58 +165,557 @@ const validateVideoUrl = (url) => {
     if (pattern.test(url)) return { valid: true, type: 'direct' };
   }
   
-  // Allow other URLs but mark as other
   if (url.startsWith('http')) {
     return { valid: true, type: 'other' };
   }
   
   return { valid: false, type: 'unknown' };
 };
+const turndownService = new TurndownService({
+  headingStyle: 'atx',
+  codeBlockStyle: 'fenced'
+});
 
-// Function to validate video URL (copied from ContentLibrary)
-const validateVideoUrlLocal = (url) => {
-  if (!url) return { valid: true, type: null };
-  
-  // YouTube patterns
-  const youtubePatterns = [
-    /^https?:\/\/(www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/,
-    /^https?:\/\/(www\.)?youtu\.be\/([a-zA-Z0-9_-]+)/,
-    /^https?:\/\/(www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]+)/
-  ];
-  
-  // Vimeo patterns
-  const vimeoPatterns = [
-    /^https?:\/\/(www\.)?vimeo\.com\/([0-9]+)/,
-    /^https?:\/\/(www\.)?vimeo\.com\/\/([0-9]+)/
-  ];
-  
-  // Direct video file patterns
-  const videoFilePatterns = [
-    /^https?:\/\/.*\.(mp4|webm|mov|avi|mkv)(\?.*)?$/i
-  ];
-  
-  for (const pattern of youtubePatterns) {
-    if (pattern.test(url)) return { valid: true, type: 'youtube' };
+// Configure Turndown for better conversion
+turndownService.addRule('strikethrough', {
+  filter: ['del', 's', 'strike'],
+  replacement: function (content) {
+    return '~~' + content + '~~';
   }
+});
+
+// List of common abbreviations that should keep their periods
+const COMMON_ABBREVIATIONS = [
+  'St', 'Mt', 'Mrs', 'Ms', 'Dr', 'Prof', 'Rev', 'Fr', 'Sr',
+  'Mr', 'Capt', 'Col', 'Gen', 'Lt', 'Sgt', 'Ave', 'Blvd',
+  'Rd', 'St', 'Ln', 'Dr', 'Ct', 'Pl', 'Ter', 'Cir',
+  'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun',
+  'Jan', 'Feb', 'Mar', 'Apr', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+];
+
+// Create regex pattern from abbreviations
+const abbrPattern = new RegExp('\\b(' + COMMON_ABBREVIATIONS.join('|') + ')\\\\.', 'gi');
+// Replace the htmlToMarkdown function with this
+const htmlToMarkdown = (html) => {
+  if (!html) return '';
   
-  for (const pattern of vimeoPatterns) {
-    if (pattern.test(url)) return { valid: true, type: 'vimeo' };
-  }
+  // Convert to markdown
+  let markdown = turndownService.turndown(html);
   
-  for (const pattern of videoFilePatterns) {
-    if (pattern.test(url)) return { valid: true, type: 'direct' };
-  }
+  // Fix escaped periods in numbered lists
+  markdown = markdown.replace(/^(\d+)\\. /gm, '$1. ');
   
-  // Allow other URLs but mark as other
-  if (url.startsWith('http')) {
-    return { valid: true, type: 'other' };
-  }
+  // Fix all common abbreviations
+  markdown = markdown.replace(abbrPattern, '$1.');
   
-  return { valid: false, type: 'unknown' };
+  // Also fix any remaining escaped periods that might be in the middle of text
+  // This catches any other instances not covered by the abbreviation list
+  markdown = markdown.replace(/([A-Za-z])\\. /g, '$1. ');
+  
+  return markdown;
+};
+// Simple Markdown to HTML converter (for preview)
+const markdownToHtml = (markdown) => {
+  if (!markdown) return '';
+  
+  let html = markdown
+    // Headers
+    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+    .replace(/^#### (.*$)/gim, '<h4>$1</h4>')
+    // Bold
+    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+    .replace(/__(.*?)__/gim, '<strong>$1</strong>')
+    // Italic
+    .replace(/\*(.*?)\*/gim, '<em>$1</em>')
+    .replace(/_(.*?)_/gim, '<em>$1</em>')
+    // Links
+    .replace(/\[(.*?)\]\((.*?)\)/gim, '<a href="$2">$1</a>')
+    // Images
+    .replace(/!\[(.*?)\]\((.*?)\)/gim, '<img src="$2" alt="$1" />')
+    // Lists
+    .replace(/^\s*-\s+(.*)/gim, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/gim, '<ul>$&</ul>')
+    // Paragraphs
+    .split('\n\n').map(p => {
+      if (!p.trim()) return '';
+      if (p.startsWith('<')) return p;
+      return `<p>${p}</p>`;
+    }).join('')
+    // Line breaks
+    .replace(/\n/g, '<br />');
+  
+  return html;
 };
 
+// Add this helper function to parse durations consistently
+const parseDurationToMinutes = (durationStr) => {
+  if (!durationStr) return 30; // Default fallback
+  
+  const str = durationStr.toString().toLowerCase();
+  
+  // Handle "X min read" format
+  if (str.includes('read')) {
+    const match = str.match(/(\d+)/);
+    return match ? parseInt(match[1]) : 30;
+  }
+  
+  let totalMinutes = 0;
+  
+  // Extract hours
+  const hoursMatch = str.match(/(\d+)\s*(?:hour|hr|h)/i);
+  if (hoursMatch) {
+    totalMinutes += parseInt(hoursMatch[1]) * 60;
+  }
+  
+  // Extract minutes
+  const minutesMatch = str.match(/(\d+)\s*(?:minute|min|m)(?!\s*read)/i);
+  if (minutesMatch) {
+    totalMinutes += parseInt(minutesMatch[1]);
+  }
+  
+  // If no hours or minutes found, try to extract just a number
+  if (totalMinutes === 0) {
+    const justNumber = str.match(/(\d+)/);
+    if (justNumber) {
+      totalMinutes = parseInt(justNumber[0]);
+    }
+  }
+  
+  return totalMinutes || 30; // Fallback to 30 if parsing fails
+};
+
+// =============================================
+// MARKDOWN EDITOR COMPONENT
+// =============================================
+const MarkdownEditor = ({ value, onChange }) => {
+  const [tab, setTab] = useState('write'); // 'write' or 'preview'
+  
+  return (
+    <div className="border border-gray-300 rounded-lg overflow-hidden">
+      {/* Editor tabs */}
+      <div className="flex border-b bg-gray-50">
+        <button
+          type="button"
+          onClick={() => setTab('write')}
+          className={`px-4 py-2 text-sm font-medium ${
+            tab === 'write' 
+              ? 'bg-white text-blue-600 border-b-2 border-blue-600' 
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+        >
+          Write
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('preview')}
+          className={`px-4 py-2 text-sm font-medium ${
+            tab === 'preview' 
+              ? 'bg-white text-blue-600 border-b-2 border-blue-600' 
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+        >
+          Preview
+        </button>
+      </div>
+      
+      {/* Write tab */}
+      {tab === 'write' && (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={15}
+          className="w-full p-4 font-mono text-sm border-0 focus:ring-0 focus:outline-none"
+          placeholder="# Lesson Title
+
+Write your lesson content in markdown here...
+
+## Section 1
+- Use **bold** or *italic* text
+- Create lists
+- Add [links](https://example.com)
+
+## Section 2
+1. Numbered lists
+2. Work too
+
+> Add blockquotes for important notes
+
+```js
+// Code blocks work great
+console.log('Hello World');
+```"
+        />
+      )}
+      
+      {/* Preview tab */}
+      {tab === 'preview' && (
+        <div className="p-4 prose prose-sm max-w-none min-h-[300px] max-h-[500px] overflow-y-auto bg-white">
+          {value ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {value}
+            </ReactMarkdown>
+          ) : (
+            <p className="text-gray-400 italic">No content to preview</p>
+          )}
+        </div>
+      )}
+      
+      {/* Helper text */}
+      <div className="bg-gray-50 px-4 py-2 border-t text-xs text-gray-500">
+        <span className="flex items-center gap-2">
+          <Sparkles className="h-3 w-3" />
+          <span>Supports GitHub Flavored Markdown: tables, task lists, code blocks, and more</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+// =============================================
+// TIPTAP EDITOR COMPONENT (Modern WYSIWYG)
+// =============================================
+
+
+const TipTapEditor = ({ value, onChange, placeholder = "Write your lesson content here..." }) => {
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+         heading: {
+          levels: [1, 2, 3, 4, 5, 6],
+          HTMLAttributes: {
+            class: 'heading', // Optional: add custom class
+          },
+        },
+        // Configure each feature explicitly
+        bulletList: {
+          keepMarks: true,
+          keepAttributes: true,
+        },
+        orderedList: {
+          keepMarks: true,
+          keepAttributes: true,
+        },
+        listItem: {
+          HTMLAttributes: {
+            class: 'ml-4',
+          },
+        },
+        
+        // Exclude link to avoid duplication (we add it separately)
+        link: false,
+      }),
+      // Text style must come before color
+      TextStyle,
+      Color.configure({
+        types: ['textStyle'],
+      }),
+      Highlight.configure({
+        multicolor: true,
+        HTMLAttributes: {
+          class: 'highlight',
+        },
+      }),
+      Link.configure({
+        openOnClick: false,
+        HTMLAttributes: {
+          class: 'text-blue-600 underline hover:text-blue-800 cursor-pointer',
+        },
+      }),
+      Image.configure({
+        HTMLAttributes: {
+          class: 'max-w-full h-auto rounded-lg shadow-md my-4',
+        },
+      }),
+      Typography,
+      Placeholder.configure({
+        placeholder: placeholder,
+        emptyEditorClass: 'is-editor-empty',
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+        alignments: ['left', 'center', 'right', 'justify'],
+      }),
+      TaskList,
+      TaskItem.configure({
+        nested: true,
+        HTMLAttributes: {
+          class: 'flex items-start gap-2 my-1',
+        },
+      }),
+    ],
+    content: value || '',
+    onUpdate: ({ editor }) => {
+      const html = editor.getHTML();
+      onChange(html);
+    },
+    editorProps: {
+      attributes: {
+        class: 'prose prose-lg max-w-none focus:outline-none min-h-[300px] p-4',
+      },
+    },
+  });
+
+  if (!editor) {
+    return null;
+  }
+
+  const MenuButton = ({ onClick, isActive, children, title }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`p-2 rounded transition-colors ${
+        isActive ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-200 text-gray-700'
+      }`}
+      title={title}
+    >
+      {children}
+    </button>
+  );
+
+  const Divider = () => (
+    <span className="w-px h-6 bg-gray-300 mx-1" />
+  );
+
+  // Color picker component
+  const ColorPicker = ({ icon: Icon, title, onColorChange, currentColor }) => {
+    return (
+      <div className="relative group">
+        <button
+          type="button"
+          className="p-2 rounded hover:bg-gray-200 text-gray-700"
+          title={title}
+        >
+          <Icon size={18} />
+        </button>
+        <div className="absolute top-full left-0 mt-1 hidden group-hover:block bg-white shadow-lg rounded-lg p-2 z-20">
+          <input
+            type="color"
+            onChange={(e) => onColorChange(e.target.value)}
+            value={currentColor || '#000000'}
+            className="w-8 h-8 cursor-pointer"
+          />
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="border border-gray-300 rounded-lg overflow-hidden bg-white">
+      {/* Toolbar */}
+      <div className="bg-gray-50 border-b p-2 flex flex-wrap items-center gap-1 sticky top-0 z-10">
+        {/* Headings */}
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+          isActive={editor.isActive('heading', { level: 1 })}
+          title="Heading 1"
+        >
+          <Heading1 size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+          isActive={editor.isActive('heading', { level: 2 })}
+          title="Heading 2"
+        >
+          <Heading2 size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+          isActive={editor.isActive('heading', { level: 3 })}
+          title="Heading 3"
+        >
+          <Heading3 size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleHeading({ level: 4 }).run()}
+          isActive={editor.isActive('heading', { level: 4 })}
+          title="Heading 4"
+        >
+          <Heading4 size={18} />
+        </MenuButton>
+
+        <Divider />
+
+        {/* Text formatting */}
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleBold().run()}
+          isActive={editor.isActive('bold')}
+          title="Bold"
+        >
+          <Bold size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+          isActive={editor.isActive('italic')}
+          title="Italic"
+        >
+          <Italic size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+          isActive={editor.isActive('strike')}
+          title="Strikethrough"
+        >
+          <Strikethrough size={18} />
+        </MenuButton>
+
+        <Divider />
+
+        {/* Alignment */}
+        <MenuButton
+          onClick={() => editor.chain().focus().setTextAlign('left').run()}
+          isActive={editor.isActive({ textAlign: 'left' })}
+          title="Align Left"
+        >
+          <AlignLeft size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().setTextAlign('center').run()}
+          isActive={editor.isActive({ textAlign: 'center' })}
+          title="Align Center"
+        >
+          <AlignCenter size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().setTextAlign('right').run()}
+          isActive={editor.isActive({ textAlign: 'right' })}
+          title="Align Right"
+        >
+          <AlignRight size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().setTextAlign('justify').run()}
+          isActive={editor.isActive({ textAlign: 'justify' })}
+          title="Justify"
+        >
+          <AlignJustify size={18} />
+        </MenuButton>
+
+        <Divider />
+
+        {/* Lists */}
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleBulletList().run()}
+          isActive={editor.isActive('bulletList')}
+          title="Bullet List"
+        >
+          <List size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          isActive={editor.isActive('orderedList')}
+          title="Numbered List"
+        >
+          <ListOrdered size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleTaskList().run()}
+          isActive={editor.isActive('taskList')}
+          title="Task List"
+        >
+          <ListChecks size={18} />
+        </MenuButton>
+
+        <Divider />
+
+        {/* Block elements */}
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          isActive={editor.isActive('blockquote')}
+          title="Quote"
+        >
+          <Quote size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          isActive={editor.isActive('codeBlock')}
+          title="Code Block"
+        >
+          <Code size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().setHorizontalRule().run()}
+          isActive={false}
+          title="Horizontal Line"
+        >
+          <Minus size={18} />
+        </MenuButton>
+
+        <Divider />
+
+        {/* Links & Colors */}
+        <MenuButton
+          onClick={() => {
+            const url = window.prompt('Enter URL:');
+            if (url) {
+              editor.chain().focus().setLink({ href: url }).run();
+            }
+          }}
+          isActive={editor.isActive('link')}
+          title="Add Link"
+        >
+          <LinkIcon size={18} />
+        </MenuButton>
+        
+        {/* Color picker */}
+        <ColorPicker
+          icon={Palette}
+          title="Text Color"
+          onColorChange={(color) => editor.chain().focus().setColor(color).run()}
+          currentColor={editor.getAttributes('textStyle').color}
+        />
+
+        {/* Highlight picker */}
+        <ColorPicker
+          icon={Highlighter}
+          title="Highlight"
+          onColorChange={(color) => editor.chain().focus().setHighlight({ color }).run()}
+          currentColor={editor.getAttributes('highlight').color}
+        />
+
+        <Divider />
+
+        {/* Undo/Redo */}
+        <MenuButton
+          onClick={() => editor.chain().focus().undo().run()}
+          isActive={false}
+          title="Undo"
+        >
+          <Undo size={18} />
+        </MenuButton>
+        <MenuButton
+          onClick={() => editor.chain().focus().redo().run()}
+          isActive={false}
+          title="Redo"
+        >
+          <Redo size={18} />
+        </MenuButton>
+      </div>
+
+      {/* Editor Content */}
+      <EditorContent editor={editor} />
+
+      {/* Helper text */}
+      <div className="bg-gray-50 px-4 py-2 border-t text-xs text-gray-500 flex items-center justify-between">
+        <span className="flex items-center gap-2">
+          <Sparkles className="h-3 w-3" />
+          <span>Rich text editor - automatically converts to Markdown when saved</span>
+        </span>
+        {editor && (
+          <span className="text-gray-400">
+            Words: {editor.storage.characterCount?.words() || 0}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// =============================================
+// MAIN COURSE MANAGER COMPONENT
+// =============================================
 export default function CourseManager() {
-  // Authentication states
+  // ========== AUTHENTICATION STATES ==========
   const [user, setUser] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -188,7 +726,7 @@ export default function CourseManager() {
     password: ""
   });
 
-  // Course management states
+  // ========== COURSE MANAGEMENT STATES ==========
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -204,11 +742,44 @@ export default function CourseManager() {
   const [mobileView, setMobileView] = useState(false);
   const [activeDownloading, setActiveDownloading] = useState(null);
   const [failedUploads, setFailedUploads] = useState([]);
-  const [r2Error, setR2Error] = useState(null);
   const [uploadQueue, setUploadQueue] = useState([]);
+  const [r2Error, setR2Error] = useState(null);
   const fileInputRef = useRef(null);
+  const docxInputRef = useRef(null);
+  const pdfInputRef = useRef(null);
+  const [courseImage, setCourseImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [editImage, setEditImage] = useState(null);
+  const [editImagePreview, setEditImagePreview] = useState(null);
+  // Add these with your other useState declarations
+const [editorMode, setEditorMode] = useState('markdown'); // 'markdown' or 'wysiwyg'
+const [wysiwygContent, setWysiwygContent] = useState('');
+// Add modules state
+const [modules, setModules] = useState([]);
 
-  // Form states
+// Fetch modules when course is selected
+useEffect(() => {
+  if (selectedCourse) {
+    fetchModules(selectedCourse.id);
+  }
+}, [selectedCourse]);
+
+const fetchModules = async (courseId) => {
+  try {
+    const modulesRef = collection(db, "courses", courseId, "modules");
+    const q = query(modulesRef, orderBy("order"));
+    const snapshot = await getDocs(q);
+    const modulesData = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    setModules(modulesData);
+  } catch (error) {
+    console.error("Error fetching modules:", error);
+  }
+};
+
+  // ========== FORM STATES ==========
   const [courseForm, setCourseForm] = useState({
     title: "",
     description: "",
@@ -219,21 +790,23 @@ export default function CourseManager() {
     level: "beginner"
   });
 
- const [lessonForm, setLessonForm] = useState({
-  title: "",
-  description: "",
-  videoUrl: "",
-  duration: "",
-  isPublished: true,
-  slides: [],    // Add this
-  documents: [], // Add this
-  templates: []  // Add this
-});
+  const [lessonForm, setLessonForm] = useState({
+    title: "",
+    description: "",
+    lessonType: "video", // "video" or "reading"
+    videoUrl: "",
+    markdown: "", // For reading lessons
+    duration: "",
+    isPublished: true,
+    slides: [],
+    documents: [],
+    templates: [],
+    originalFile: null, // Track original uploaded file
+    originalFileUrl: null, // URL to original file in R2
+    originalFileKey: null // R2 key for deletion
+  });
 
-  const [courseImage, setCourseImage] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [editImage, setEditImage] = useState(null);
-  const [editImagePreview, setEditImagePreview] = useState(null);
+
   
   // New resource state
   const [newResource, setNewResource] = useState({
@@ -246,6 +819,8 @@ export default function CourseManager() {
     viewable: true
   });
 
+  // ========== INITIALIZATION EFFECTS ==========
+  
   // Check R2 configuration
   useEffect(() => {
     if (!import.meta.env.VITE_R2_WORKER_URL) {
@@ -268,6 +843,25 @@ export default function CourseManager() {
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  // Test R2 connection
+  useEffect(() => {
+    const testR2Connection = async () => {
+      try {
+        const connection = await R2Service.testConnection();
+        if (!connection.connected) {
+          console.warn('R2 Service not available:', connection.error);
+          setR2Error('R2 service is not available. File uploads may fail.');
+        }
+      } catch (error) {
+        console.error('R2 connection test failed:', error);
+      }
+    };
+    
+    if (import.meta.env.VITE_R2_WORKER_URL) {
+      testR2Connection();
+    }
+  }, []);
+
   // Authentication management
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -275,12 +869,11 @@ export default function CourseManager() {
       setIsAuthenticated(!!user);
       
       if (user) {
-        // Check if user has admin role in Firestore
         try {
           const userDoc = await getDoc(doc(db, "users", user.uid));
           if (userDoc.exists() && userDoc.data().role === "admin") {
             setIsAdmin(true);
-            fetchCourses(); // Fetch courses only when admin is authenticated
+            fetchCourses();
           } else {
             setIsAdmin(false);
             console.log("User is not an admin");
@@ -298,26 +891,131 @@ export default function CourseManager() {
     
     return () => unsubscribe();
   }, []);
+  
 
-  // Add this useEffect to test R2 connection
-useEffect(() => {
-  const testR2Connection = async () => {
+  // ========== CONVERSION FUNCTIONS ==========
+  
+  // Convert DOCX to Markdown using Mammoth
+  const convertDocxToMarkdown = async (file) => {
     try {
-      const connection = await R2Service.testConnection();
-      if (!connection.connected) {
-        console.warn('R2 Service not available:', connection.error);
-        setR2Error('R2 service is not available. File uploads may fail.');
-      }
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.convertToMarkdown({ arrayBuffer });
+      
+      return {
+        success: true,
+        markdown: result.value,
+        messages: result.messages
+      };
     } catch (error) {
-      console.error('R2 connection test failed:', error);
+      console.error("DOCX conversion failed:", error);
+      return {
+        success: false,
+        error: error.message
+      };
     }
   };
-  
-  if (import.meta.env.VITE_R2_WORKER_URL) {
-    testR2Connection();
-  }
-}, []);
 
+  // Convert PDF to Markdown (basic text extraction)
+  const convertPdfToMarkdown = async (file) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+      
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join(' ');
+        fullText += `## Page ${i}\n\n${pageText}\n\n`;
+      }
+      
+      return {
+        success: true,
+        markdown: fullText,
+        pageCount: pdf.numPages
+      };
+    } catch (error) {
+      console.error("PDF conversion failed:", error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  };
+
+  // Handle file upload and conversion
+  const handleFileUploadAndConvert = async (file) => {
+    try {
+      setR2Loading(true);
+      setUploadProgress(10);
+      
+      const fileType = file.name.split('.').pop().toLowerCase();
+      let conversionResult;
+      
+      if (fileType === 'docx') {
+        conversionResult = await convertDocxToMarkdown(file);
+      } else if (fileType === 'pdf') {
+        conversionResult = await convertPdfToMarkdown(file);
+      } else {
+        alert('Unsupported file type. Please upload DOCX or PDF files.');
+        return;
+      }
+      
+      setUploadProgress(70);
+      
+      if (conversionResult.success) {
+        // Update lesson form with converted markdown
+        setLessonForm(prev => ({
+          ...prev,
+          markdown: conversionResult.markdown,
+          lessonType: 'reading',
+          originalFile: {
+            name: file.name,
+            type: fileType,
+            converted: true,
+            size: file.size
+          }
+        }));
+        
+        setUploadProgress(90);
+        
+        // Also upload the original file to R2 for download
+        try {
+          const uploadResult = await R2Service.uploadFile(file, {
+            folder: 'lesson-originals',
+            lessonId: selectedCourse?.id || 'new',
+            category: 'original-documents'
+          });
+          
+          if (uploadResult.success) {
+            setLessonForm(prev => ({
+              ...prev,
+              originalFileUrl: uploadResult.data.url,
+              originalFileKey: uploadResult.data.key
+            }));
+          }
+        } catch (uploadError) {
+          console.error("Failed to upload original file to R2:", uploadError);
+          // Don't fail the whole process if R2 upload fails
+        }
+        
+        setUploadProgress(100);
+        alert(`✅ ${fileType.toUpperCase()} converted to Markdown successfully!`);
+      } else {
+        alert(`Conversion failed: ${conversionResult.error}`);
+      }
+      
+    } catch (error) {
+      console.error("File conversion error:", error);
+      alert(`Error converting file: ${error.message}`);
+    } finally {
+      setR2Loading(false);
+      setTimeout(() => setUploadProgress(0), 1000);
+    }
+  };
+
+  // ========== DATA FETCHING FUNCTIONS ==========
+  
   const fetchCourses = async () => {
     try {
       setLoading(true);
@@ -337,7 +1035,8 @@ useEffect(() => {
     }
   };
 
-  // Login handler
+  // ========== AUTHENTICATION FUNCTIONS ==========
+  
   const handleAdminLogin = async (e) => {
     e.preventDefault();
     try {
@@ -345,7 +1044,6 @@ useEffect(() => {
       await signInWithEmailAndPassword(auth, loginForm.email, loginForm.password);
       setShowLoginModal(false);
       setLoginForm({ email: "", password: "" });
-      alert("✅ Admin login successful!");
     } catch (error) {
       console.error("Login error:", error);
       alert("Login failed. Please check credentials.");
@@ -354,178 +1052,133 @@ useEffect(() => {
     }
   };
 
-  // Logout handler
   const handleLogout = async () => {
     try {
       await signOut(auth);
       setUser(null);
       setIsAuthenticated(false);
       setIsAdmin(false);
-      alert("Logged out successfully");
     } catch (error) {
       console.error("Logout error:", error);
     }
   };
 
-  // Simulate upload progress
-  const simulateUploadProgress = () => {
-    setUploadProgress(0);
-    const interval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev >= 95) {
-          clearInterval(interval);
-          return prev;
+  // ========== FILE UPLOAD FUNCTIONS ==========
+  
+  const handleFileUpload = async (file, metadata = {}) => {
+    try {
+      const uploadOptions = {
+        folder: 'course-resources',
+        courseId: selectedCourse?.id || 'general',
+        metadata: {
+          type: getFileType(file.name),
+          originalName: file.name,
+          uploadedBy: user?.email || 'admin',
+          ...metadata
         }
-        return prev + Math.random() * 10;
-      });
-    }, 200);
-    return interval;
+      };
+
+      const uploadResult = await R2Service.uploadFile(file, uploadOptions);
+      
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Upload failed');
+      }
+
+      const r2Data = uploadResult.data;
+      
+      return {
+        url: r2Data.url,
+        key: r2Data.key,
+        name: r2Data.originalName || r2Data.filename || file.name,
+        fileName: r2Data.filename,
+        size: r2Data.size,
+        type: r2Data.contentType?.split('/')[0] || getFileType(file.name),
+        uploadedAt: r2Data.metadata?.uploadedAt || new Date().toISOString(),
+        ...r2Data.metadata
+      };
+    } catch (error) {
+      console.error("Error uploading to R2:", error);
+      
+      const failedUpload = {
+        file,
+        metadata,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+      
+      setFailedUploads(prev => [...prev, failedUpload]);
+      throw error;
+    }
   };
 
-  // Handle file upload to R2 with improved error handling
-const handleFileUpload = async (file, metadata = {}) => {
-  try {
-    const uploadOptions = {
-      folder: 'course-resources',
-      courseId: selectedCourse?.id || 'general',
-      metadata: {
-        type: getFileType(file.name),
-        originalName: file.name,
-        uploadedBy: user?.email || 'admin',
-        ...metadata
-      }
-    };
-
-    const uploadResult = await R2Service.uploadFile(file, uploadOptions);
-    
-    if (!uploadResult.success) {
-      throw new Error(uploadResult.error || 'Upload failed');
+  const handleAddResource = async () => {
+    if (!newResource.name || !newResource.file) {
+      alert("Please provide a resource name and select a file");
+      return;
     }
 
-    const r2Data = uploadResult.data;
-    
-    return {
-      url: r2Data.url,
-      key: r2Data.key,
-      name: r2Data.originalName || r2Data.filename || file.name,
-      fileName: r2Data.filename,
-      size: r2Data.size,
-      type: r2Data.contentType?.split('/')[0] || getFileType(file.name),
-      uploadedAt: r2Data.metadata?.uploadedAt || new Date().toISOString(),
-      // Include all metadata
-      ...r2Data.metadata
-    };
-  } catch (error) {
-    console.error("Error uploading to R2:", error);
-    
-    const failedUpload = {
-      file,
-      metadata,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    };
-    
-    setFailedUploads(prev => [...prev, failedUpload]);
-    throw error;
-  }
-};
-
-    
-
-  // Retry failed uploads
-  const retryFailedUpload = async (failedUpload) => {
     try {
       setR2Loading(true);
-      setR2Error(null);
+      setUploadProgress(0);
       
-      const result = await handleFileUpload(failedUpload.file, failedUpload.metadata);
+      const uploadedFile = await R2Service.uploadFile(newResource.file, {
+        category: newResource.category,
+        description: newResource.description,
+        downloadable: newResource.downloadable,
+        viewable: newResource.viewable
+      }, (progress) => {
+        setUploadProgress(progress);
+      });
       
-      setFailedUploads(prev => prev.filter(f => f !== failedUpload));
-      return result;
+      setUploadProgress(100);
+      
+      const resource = {
+        ...uploadedFile.data,
+        category: newResource.category,
+        description: newResource.description,
+        downloadable: newResource.downloadable,
+        viewable: newResource.viewable,
+        addedAt: new Date().toISOString()
+      };
+
+      const categoryKey = newResource.category === 'slides' ? 'slides' :
+                         newResource.category === 'template' ? 'templates' : 'documents';
+      
+      setLessonForm(prev => ({
+        ...prev,
+        [categoryKey]: [...prev[categoryKey], resource]
+      }));
+
+      setNewResource({
+        name: "",
+        file: null,
+        type: "document",
+        category: "document",
+        description: "",
+        downloadable: true,
+        viewable: true
+      });
+
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+
+      setTimeout(() => {
+        setUploadProgress(0);
+      }, 1000);
+      
+      alert("✅ Resource uploaded successfully to Cloudflare R2!");
+
     } catch (error) {
-      console.error("Retry failed:", error);
-      throw error;
+      console.error("Error adding resource:", error);
+      setUploadProgress(0);
+      setR2Error(`Failed to add resource: ${error.message}`);
+      alert(`Failed to add resource: ${error.message}`);
     } finally {
       setR2Loading(false);
     }
   };
 
-  // Add resource to lesson with R2 upload
-const handleAddResource = async () => {
-  if (!newResource.name || !newResource.file) {
-    alert("Please provide a resource name and select a file");
-    return;
-  }
-
-  try {
-    setR2Loading(true);
-    setUploading(true);
-    setR2Error(null);
-    setUploadProgress(0); // Start at 0
-    
-    const uploadedFile = await R2Service.uploadFile(newResource.file, {
-      category: newResource.category,
-      description: newResource.description,
-      downloadable: newResource.downloadable,
-      viewable: newResource.viewable
-    }, (progress) => {
-      // Real progress callback
-      setUploadProgress(progress);
-    });
-    
-    // Set to 100% when complete
-    setUploadProgress(100);
-    
-    const resource = {
-      ...uploadedFile.data,
-      category: newResource.category,
-      description: newResource.description,
-      downloadable: newResource.downloadable,
-      viewable: newResource.viewable,
-      addedAt: new Date().toISOString()
-    };
-
-    const categoryKey = newResource.category === 'slides' ? 'slides' :
-                       newResource.category === 'template' ? 'templates' : 'documents';
-    
-    setLessonForm(prev => ({
-      ...prev,
-      [categoryKey]: [...prev[categoryKey], resource]
-    }));
-
-    setNewResource({
-      name: "",
-      file: null,
-      type: "document",
-      category: "document",
-      description: "",
-      downloadable: true,
-      viewable: true
-    });
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-
-    // Show 100% briefly, then reset
-    setTimeout(() => {
-      setUploadProgress(0);
-    }, 1000);
-    
-    alert("✅ Resource uploaded successfully to Cloudflare R2!");
-
-  } catch (error) {
-    console.error("Error adding resource:", error);
-    setUploadProgress(0);
-    setR2Error(`Failed to add resource: ${error.message}`);
-    alert(`Failed to add resource: ${error.message}`);
-  } finally {
-    setR2Loading(false);
-    setUploading(false);
-  }
-};
-
-  // Remove resource (with optional R2 deletion)
   const removeResource = async (category, index) => {
     const resource = lessonForm[category][index];
     
@@ -553,30 +1206,22 @@ const handleAddResource = async () => {
     }));
   };
 
-  // Calculate total resources
-  const getTotalResources = () => {
-    return lessonForm.slides.length + lessonForm.documents.length + lessonForm.templates.length;
-  };
-
-  // Download resource from R2
-const downloadResource = async (resource) => {
-  if (!resource) return;
-  
-  try {
-    setActiveDownloading(resource.key);
+  const downloadResource = async (resource) => {
+    if (!resource) return;
     
-    let url;
-    if (resource.key) {
-      url = await R2Service.getUrl(resource.key); // Updated method name
-    } else if (resource.downloadUrl) {
-      url = resource.downloadUrl;
-    } else if (resource.url) {
-      url = resource.url;
-    } else if (resource.publicUrl) {
-      url = resource.publicUrl;
-    } else {
-      throw new Error('No valid URL found for resource');
-    }
+    try {
+      setActiveDownloading(resource.key);
+      
+      let url;
+      if (resource.key) {
+        url = await R2Service.getUrl(resource.key);
+      } else if (resource.downloadUrl) {
+        url = resource.downloadUrl;
+      } else if (resource.url) {
+        url = resource.url;
+      } else {
+        throw new Error('No valid URL found for resource');
+      }
       
       const link = document.createElement('a');
       link.href = url;
@@ -596,191 +1241,47 @@ const downloadResource = async (resource) => {
     }
   };
 
-  // Preview resource
-const previewResource = async (resource) => {
-  if (!resource) return;
-  
-  try {
-    setActiveDownloading(resource.key || resource.id);
+  const previewResource = async (resource) => {
+    if (!resource) return;
     
-    let previewUrl;
-    
-    // Check different possible URL sources
-    if (resource.url && !resource.url.includes('r2.dev')) {
-      // Already has a direct URL
-      previewUrl = resource.url;
-    } else if (resource.key) {
-      // Get signed URL from R2
-      const signedUrl = await R2Service.getUrl(resource.key);
+    try {
+      setActiveDownloading(resource.key || resource.id);
       
-      // Handle different response formats
-      if (typeof signedUrl === 'string') {
-        previewUrl = signedUrl;
-      } else if (signedUrl?.url) {
-        previewUrl = signedUrl.url;
+      let previewUrl;
+      
+      if (resource.url && !resource.url.includes('r2.dev')) {
+        previewUrl = resource.url;
+      } else if (resource.key) {
+        const signedUrl = await R2Service.getUrl(resource.key);
+        previewUrl = typeof signedUrl === 'string' ? signedUrl : signedUrl?.url;
+      } else if (resource.publicUrl) {
+        previewUrl = resource.publicUrl;
       } else {
-        throw new Error('Invalid URL response from R2');
+        throw new Error('No previewable URL found');
       }
-    } else if (resource.publicUrl) {
-      previewUrl = resource.publicUrl;
-    } else if (resource.downloadUrl) {
-      previewUrl = resource.downloadUrl;
-    } else {
-      throw new Error('No previewable URL found');
-    }
-    
-    // Open in new tab
-    window.open(previewUrl, '_blank', 'noopener,noreferrer');
-    
-    setTimeout(() => {
+      
+      window.open(previewUrl, '_blank', 'noopener,noreferrer');
+      
+      setTimeout(() => {
+        setActiveDownloading(null);
+      }, 1000);
+      
+    } catch (error) {
+      console.error("Error previewing resource:", error);
+      
+      if (resource.key) {
+        const fallbackUrl = `${import.meta.env.VITE_R2_WORKER_URL || ''}/cdn/${resource.key}`;
+        window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        alert(`Failed to preview file: ${error.message}`);
+      }
+      
       setActiveDownloading(null);
-    }, 1000);
-    
-  } catch (error) {
-    console.error("Error previewing resource:", error);
-    
-    // Fallback: Try to create a direct URL from the key
-    if (resource.key) {
-      const fallbackUrl = `${import.meta.env.VITE_R2_WORKER_URL || ''}/cdn/${resource.key}`;
-      window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
-    } else {
-      alert(`Failed to preview file: ${error.message}`);
     }
-    
-    setActiveDownloading(null);
-  }
-};
-
-  // Get URL for resource display
-  const getResourceUrl = (resource) => {
-    if (resource.url) return resource.url;
-    if (resource.publicUrl) return resource.publicUrl;
-    if (resource.cdnUrl) return resource.cdnUrl;
-    return null;
   };
 
-  // Render resource list with R2 integration
-  const renderResourceList = (resources, category) => {
-    if (resources.length === 0) {
-      return (
-        <div className="text-center py-4">
-          <FileText className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500">No {category} yet</p>
-        </div>
-      );
-    }
-
-    return (
-      <div className="space-y-2">
-        {resources.map((resource, index) => {
-          const fileType = resource.type || getFileType(resource.name || resource.originalName || '');
-          const resourceUrl = getResourceUrl(resource);
-          
-          return (
-            <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                <div className={`p-2 rounded ${FILE_TYPES[fileType]?.bgColor || 'bg-gray-100'}`}>
-                  <FileIcon type={fileType} className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {resource.name || resource.originalName || 'Unnamed Resource'}
-                    </p>
-                    {resource.key && (
-                      <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full flex items-center gap-1">
-                        <Cloud size={10} />
-                        <span className="hidden sm:inline">R2</span>
-                      </span>
-                    )}
-                    {resource.error && (
-                      <span className="px-1.5 py-0.5 bg-red-100 text-red-700 text-xs rounded-full flex items-center gap-1">
-                        <AlertCircle size={10} />
-                        Error
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
-                    <span className="capitalize">{resource.category || category}</span>
-                    <span>•</span>
-                    <span>{(resource.type || '').split('/')[0]?.toUpperCase() || fileType.toUpperCase()}</span>
-                    <span>•</span>
-                    <span>{resource.size || 'Unknown size'}</span>
-                  </div>
-                  {resource.description && (
-                    <p className="text-xs text-gray-600 mt-1 truncate">{resource.description}</p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {resource.error ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm('Retry uploading this file?')) {
-                        retryFailedUpload(resource);
-                      }
-                    }}
-                    className="px-3 py-1 text-sm bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200 flex items-center gap-1"
-                    title="Retry upload"
-                  >
-                    <RefreshCw size={12} />
-                    <span className="hidden sm:inline">Retry</span>
-                  </button>
-                ) : (
-                  <>
-                    {resource.viewable !== false && (
-                      <button
-                        type="button"
-                        onClick={() => previewResource(resource)}
-                        disabled={activeDownloading === (resource.key || resource.id)}
-                        className="px-3 py-1 text-sm bg-green-100 text-green-700 rounded hover:bg-green-200 flex items-center gap-1 disabled:opacity-50"
-                        title="Preview"
-                      >
-                        {activeDownloading === (resource.key || resource.id) ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <ExternalLink size={12} />
-                        )}
-                        <span className="hidden sm:inline">Preview</span>
-                      </button>
-                    )}
-                    
-                    {resource.downloadable !== false && (
-                      <button
-                        type="button"
-                        onClick={() => downloadResource(resource)}
-                        disabled={activeDownloading === resource.key}
-                        className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 flex items-center gap-1 disabled:opacity-50"
-                        title="Download from Cloudflare R2"
-                      >
-                        {activeDownloading === resource.key ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Download size={12} />
-                        )}
-                        <span className="hidden sm:inline">Download</span>
-                      </button>
-                    )}
-                  </>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeResource(category, index)}
-                  className="ml-2 p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors"
-                  aria-label={`Remove ${resource.name}`}
-                  title="Delete"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
+  // ========== COURSE MANAGEMENT FUNCTIONS ==========
+  
   const handleImageUpload = async (e, isEdit = false) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -798,16 +1299,10 @@ const previewResource = async (resource) => {
     try {
       setUploading(true);
       
-      const compressedFile = await compressImage(file, {
-        maxWidth: 1280,
-        maxHeight: 720,
-        quality: 0.7
-      });
-      
       if (isEdit) {
-        setEditImage(compressedFile);
+        setEditImage(file);
       } else {
-        setCourseImage(compressedFile);
+        setCourseImage(file);
       }
       
       const reader = new FileReader();
@@ -819,7 +1314,7 @@ const previewResource = async (resource) => {
         }
         setUploading(false);
       };
-      reader.readAsDataURL(compressedFile);
+      reader.readAsDataURL(file);
       
     } catch (error) {
       console.error("Error processing image:", error);
@@ -837,7 +1332,6 @@ const previewResource = async (resource) => {
       const storageRef = ref(storage, storagePath);
       
       await uploadBytes(storageRef, imageFile);
-      
       const downloadURL = await getDownloadURL(storageRef);
       return downloadURL;
     } catch (error) {
@@ -848,12 +1342,6 @@ const previewResource = async (resource) => {
 
   const handleCreateCourse = async (e) => {
     e.preventDefault();
-    
-    // Debug logging
-    console.log("Creating course...");
-    console.log("Current user:", auth.currentUser);
-    console.log("Is authenticated:", isAuthenticated);
-    console.log("Is admin:", isAdmin);
     
     if (!isAuthenticated || !isAdmin) {
       alert("You must be logged in as an admin to create courses");
@@ -916,118 +1404,99 @@ const previewResource = async (resource) => {
     }
   };
 
-  // =============================================
-  // UPDATED: handleAddLesson function (using ContentLibrary approach)
-  // =============================================
   const handleAddLesson = async (e) => {
-  e.preventDefault();
-  
-  console.log("=== DEBUG: Adding Lesson (ContentLibrary approach) ===");
-  console.log("User:", auth.currentUser?.email);
-  console.log("User UID:", auth.currentUser?.uid);
-  console.log("Is authenticated?", !!auth.currentUser);
-  
-  if (!selectedCourse || !lessonForm.title.trim()) {
-    alert("Please fill in lesson title");
-    return;
-  }
-
-  // Validate video URL if provided
-  if (lessonForm.videoUrl) {
-    const validation = validateVideoUrlLocal(lessonForm.videoUrl);
-    if (!validation.valid) {
-      alert("Please enter a valid YouTube, Vimeo, or direct video URL");
+    e.preventDefault();
+    
+    if (!selectedCourse || !lessonForm.title.trim()) {
+      alert("Please fill in lesson title");
       return;
     }
-  }
 
-  try {
-    setLoading(true);
-    // REMOVE THIS LINE: setError(null);
-    
-    const lessonId = uuidv4();
-    const courseId = selectedCourse.id;
-    
-    // Determine video type
-    let videoType = "youtube"; // default
-    if (lessonForm.videoUrl) {
-      const validation = validateVideoUrlLocal(lessonForm.videoUrl);
-      videoType = validation.type || "other";
+    // Validate based on lesson type
+    if (lessonForm.lessonType === "video" && lessonForm.videoUrl) {
+      const validation = validateVideoUrl(lessonForm.videoUrl);
+      if (!validation.valid) {
+        alert("Please enter a valid YouTube, Vimeo, or direct video URL");
+        return;
+      }
     }
-    
-    // Prepare lesson data - SIMPLIFIED like ContentLibrary
-    const newLesson = {
-      id: lessonId,
-      title: lessonForm.title,
-      description: lessonForm.description || "",
-      videoUrl: lessonForm.videoUrl || "",
-      videoType: videoType,
-      duration: lessonForm.duration || "0 min",
-      isPublished: lessonForm.isPublished !== false,
-      order: selectedCourse.lessonCount || 0, // Use existing lesson count
-      createdAt: new Date().toISOString(),
-      // Include resources if they exist
-      resources: [
-        ...(lessonForm.slides || []),
-        ...(lessonForm.documents || []),
-        ...(lessonForm.templates || [])
-      ].map(r => ({
-        ...r,
-        storageType: 'r2'
-      }))
-    };
 
-    console.log("Attempting to write lesson to Firestore...");
-    console.log("Path: courses/", courseId, "/lessons");
-    console.log("Lesson data:", JSON.stringify(newLesson, null, 2));
-    
-    // Use setDoc instead of addDoc for more control
-    const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
-    await setDoc(lessonRef, newLesson);
-    
-    console.log("✅ Lesson added! Document ID:", lessonId);
+    try {
+      setLoading(true);
+      
+      const lessonId = uuidv4();
+      const courseId = selectedCourse.id;
+      
+      let videoType = null;
+      if (lessonForm.lessonType === "video" && lessonForm.videoUrl) {
+        const validation = validateVideoUrl(lessonForm.videoUrl);
+        videoType = validation.type || "other";
+      }
+      
+      const newLesson = {
+        id: lessonId,
+        title: lessonForm.title,
+        description: lessonForm.description || "",
+        lessonType: lessonForm.lessonType,
+        duration: lessonForm.duration || (lessonForm.lessonType === "reading" ? "15 min read" : "0 min"),
+        isPublished: lessonForm.isPublished !== false,
+        order: selectedCourse.lessonCount || 0,
+        createdAt: new Date().toISOString(),
+        resources: [
+          ...(lessonForm.slides || []),
+          ...(lessonForm.documents || []),
+          ...(lessonForm.templates || [])
+        ].map(r => ({
+          ...r,
+          storageType: 'r2'
+        }))
+      };
 
-    // Update course lesson count
-    const courseRef = doc(db, "courses", courseId);
-    await updateDoc(courseRef, {
-      lessonCount: (selectedCourse.lessonCount || 0) + 1,
-      updatedAt: serverTimestamp()
-    });
+      if (lessonForm.lessonType === "video") {
+        newLesson.videoUrl = lessonForm.videoUrl || "";
+        newLesson.videoType = videoType;
+      } else {
+        newLesson.markdown = lessonForm.markdown || "";
+        newLesson.content = lessonForm.markdown?.replace(/[#*`~\[\]]/g, '') || "";
+        if (lessonForm.originalFileUrl) {
+          newLesson.originalFile = {
+            name: lessonForm.originalFile?.name,
+            url: lessonForm.originalFileUrl,
+            key: lessonForm.originalFileKey
+          };
+        }
+      }
+      
+      const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
+      await setDoc(lessonRef, newLesson);
+      
+      const courseRef = doc(db, "courses", courseId);
+      await updateDoc(courseRef, {
+        lessonCount: (selectedCourse.lessonCount || 0) + 1,
+        updatedAt: serverTimestamp()
+      });
 
-    // ✅ CRITICAL: Update all enrollments' totalLessons
-    await updateAllEnrollmentsForCourse(courseId);
+      await updateAllEnrollmentsForCourse(courseId);
 
-    alert("✅ Lesson added successfully!");
-    setShowAddLessonModal(false);
-    resetLessonForm();
-    fetchCourses();
-    
-  } catch (error) {
-    console.error("❌ Error adding lesson:", error);
-    console.error("Error code:", error.code);
-    console.error("Error message:", error.message);
-    
-    if (error.code === 'permission-denied') {
-      alert("Permission denied by Firestore. Check:\n1. Firestore rules\n2. User authentication\n3. Admin role in users collection");
-    } else {
+      alert("✅ Lesson added successfully!");
+      setShowAddLessonModal(false);
+      resetLessonForm();
+      fetchCourses();
+      
+    } catch (error) {
+      console.error("❌ Error adding lesson:", error);
       alert("Error adding lesson: " + error.message);
+    } finally {
+      setLoading(false);
     }
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
-  // =============================================
-  // ADD THIS FUNCTION: Update all enrollments for a course
-  // =============================================
   const updateAllEnrollmentsForCourse = async (courseId) => {
     try {
-      // Get current total lessons
       const lessonsRef = collection(db, "courses", courseId, "lessons");
       const lessonsSnapshot = await getDocs(lessonsRef);
       const currentTotalLessons = lessonsSnapshot.size;
       
-      // Get all enrollments for this course
       const enrollmentsRef = collection(db, "enrollments");
       const enrollmentsQuery = query(enrollmentsRef, where("courseId", "==", courseId));
       const enrollmentsSnapshot = await getDocs(enrollmentsQuery);
@@ -1039,14 +1508,11 @@ const previewResource = async (resource) => {
       
       console.log(`Updating ${enrollmentsSnapshot.size} enrollments for course ${courseId}`);
       
-      // Batch update all enrollments
       const batch = writeBatch(db);
       
       enrollmentsSnapshot.docs.forEach(enrollmentDoc => {
         const enrollmentData = enrollmentDoc.data();
         const completedCount = enrollmentData.completedLessons?.length || 0;
-        
-        // Recalculate progress with new total (never exceed 100%)
         const newProgress = Math.min(
           Math.round((completedCount / currentTotalLessons) * 100),
           100
@@ -1064,7 +1530,6 @@ const previewResource = async (resource) => {
       
     } catch (error) {
       console.error("Error updating enrollments:", error);
-      // Don't throw - we don't want to fail lesson creation if enrollment update fails
     }
   };
 
@@ -1139,7 +1604,6 @@ const previewResource = async (resource) => {
     }
   };
 
-  // Enhanced course deletion with R2 cleanup
   const deleteCourse = async (courseId) => {
     if (!isAuthenticated || !isAdmin) {
       alert("You must be logged in as an admin to delete courses");
@@ -1156,35 +1620,28 @@ const previewResource = async (resource) => {
     try {
       setLoading(true);
       
-      // Get all resources for this course from R2
-       // Get all resources for this course from R2
-  try {
-    const files = await R2Service.listFiles({ 
-      prefix: `course-resources/${courseId}/` 
-    });
-    
-    if (files && files.length > 0) { // Add null check
-      const shouldDelete = window.confirm(
-        `This course has ${files.length} files in Cloudflare R2. Delete them as well?`
-      );
-      
-      if (shouldDelete) {
-        const keys = files.map(f => f.key).filter(Boolean);
-        if (keys.length > 0) {
-          const deleteResult = await R2Service.batchDeleteFiles(keys);
-          console.log(`Deleted ${deleteResult.successful}/${deleteResult.total} files from R2`);
-          if (deleteResult.failed > 0) {
-            console.warn('Some files failed to delete:', deleteResult.errors);
+      try {
+        const files = await R2Service.listFiles({ 
+          prefix: `course-resources/${courseId}/` 
+        });
+        
+        if (files && files.length > 0) {
+          const shouldDelete = window.confirm(
+            `This course has ${files.length} files in Cloudflare R2. Delete them as well?`
+          );
+          
+          if (shouldDelete) {
+            const keys = files.map(f => f.key).filter(Boolean);
+            if (keys.length > 0) {
+              const deleteResult = await R2Service.batchDeleteFiles(keys);
+              console.log(`Deleted ${deleteResult.successful}/${deleteResult.total} files from R2`);
+            }
           }
         }
+      } catch (r2Error) {
+        console.error("Error cleaning up R2 resources:", r2Error);
       }
-    }
-  } catch (r2Error) {
-    console.error("Error cleaning up R2 resources:", r2Error);
-    // Continue with course deletion
-  }
       
-      // Delete course from Firestore
       await deleteDoc(doc(db, "courses", courseId));
       
       alert("✅ Course deleted successfully!");
@@ -1198,6 +1655,8 @@ const previewResource = async (resource) => {
     }
   };
 
+  // ========== UTILITY FUNCTIONS ==========
+  
   const resetCourseForm = () => {
     setCourseForm({
       title: "",
@@ -1212,29 +1671,34 @@ const previewResource = async (resource) => {
     setImagePreview(null);
   };
 
-const resetLessonForm = () => {
-  setLessonForm({
-    title: "",
-    description: "",
-    videoUrl: "",
-    duration: "",
-    isPublished: true,
-    slides: [],    // Add these
-    documents: [], // Add these
-    templates: []  // Add these
-  });
-  setNewResource({
-    name: "",
-    file: null,
-    type: "document",
-    category: "document",
-    description: "",
-    downloadable: true,
-    viewable: true
-  });
-  setUploadProgress(0);
-  setR2Error(null);
-};
+  const resetLessonForm = () => {
+    setLessonForm({
+      title: "",
+      description: "",
+      lessonType: "video",
+      videoUrl: "",
+      markdown: "",
+      duration: "",
+      isPublished: true,
+      slides: [],
+      documents: [],
+      templates: [],
+      originalFile: null,
+      originalFileUrl: null,
+      originalFileKey: null
+    });
+    setNewResource({
+      name: "",
+      file: null,
+      type: "document",
+      category: "document",
+      description: "",
+      downloadable: true,
+      viewable: true
+    });
+    setUploadProgress(0);
+    setR2Error(null);
+  };
 
   const resetEditForm = () => {
     setEditingCourse(null);
@@ -1255,19 +1719,109 @@ const resetLessonForm = () => {
     return colors[category] || "bg-gray-100 text-gray-800";
   };
 
-  // Clear R2 error
+  const getTotalResources = () => {
+    return lessonForm.slides.length + lessonForm.documents.length + lessonForm.templates.length;
+  };
+
   const clearR2Error = () => {
     setR2Error(null);
   };
 
-  // Clear failed uploads
   const clearFailedUploads = () => {
     setFailedUploads([]);
   };
 
-  // ========== AUTHENTICATION COMPONENTS ==========
+  // ========== RENDER FUNCTIONS ==========
+  
+  const renderResourceList = (resources, category) => {
+    if (resources.length === 0) {
+      return (
+        <div className="text-center py-4">
+          <FileText className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+          <p className="text-sm text-gray-500">No {category} yet</p>
+        </div>
+      );
+    }
 
-  // Show loading state
+    return (
+      <div className="space-y-2">
+        {resources.map((resource, index) => {
+          const fileType = resource.type || getFileType(resource.name || resource.originalName || '');
+          
+          return (
+            <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className={`p-2 rounded ${FILE_TYPES[fileType]?.bgColor || 'bg-gray-100'}`}>
+                  <FileIcon type={fileType} className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {resource.name || resource.originalName || 'Unnamed Resource'}
+                    </p>
+                    {resource.key && (
+                      <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full flex items-center gap-1">
+                        <Cloud size={10} />
+                        <span className="hidden sm:inline">R2</span>
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                    <span className="capitalize">{resource.category || category}</span>
+                    <span>•</span>
+                    <span>{resource.size || 'Unknown size'}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {resource.viewable !== false && (
+                  <button
+                    type="button"
+                    onClick={() => previewResource(resource)}
+                    disabled={activeDownloading === (resource.key || resource.id)}
+                    className="px-3 py-1 text-sm bg-green-100 text-green-700 rounded hover:bg-green-200 flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {activeDownloading === (resource.key || resource.id) ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <ExternalLink size={12} />
+                    )}
+                    <span className="hidden sm:inline">Preview</span>
+                  </button>
+                )}
+                
+                {resource.downloadable !== false && (
+                  <button
+                    type="button"
+                    onClick={() => downloadResource(resource)}
+                    disabled={activeDownloading === resource.key}
+                    className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {activeDownloading === resource.key ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Download size={12} />
+                    )}
+                    <span className="hidden sm:inline">Download</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeResource(category, index)}
+                  className="ml-2 p-1.5 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // ========== AUTHENTICATION UI ==========
+  
   if (authLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[400px]">
@@ -1277,7 +1831,6 @@ const resetLessonForm = () => {
     );
   }
 
-  // Show login required if not authenticated or not admin
   if (!isAuthenticated || !isAdmin) {
     return (
       <div className="min-h-screen bg-gray-50 p-4">
@@ -1308,7 +1861,7 @@ const resetLessonForm = () => {
                     type="email"
                     value={loginForm.email}
                     onChange={(e) => setLoginForm({...loginForm, email: e.target.value})}
-                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="admin@example.com"
                     required
                     disabled={loading}
@@ -1323,7 +1876,7 @@ const resetLessonForm = () => {
                     type="password"
                     value={loginForm.password}
                     onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
-                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="••••••••"
                     required
                     disabled={loading}
@@ -1345,15 +1898,6 @@ const resetLessonForm = () => {
                   )}
                 </button>
               </form>
-
-              <div className="mt-6 p-4 bg-blue-50 rounded-lg">
-                <p className="text-sm text-blue-800 font-medium mb-1">Demo Admin Credentials:</p>
-                <p className="text-sm text-blue-700">Email: admin@example.com</p>
-                <p className="text-sm text-blue-700">Password: admin123</p>
-                <p className="text-xs text-blue-600 mt-2">
-                  If these don't work, contact system administrator to create an admin account.
-                </p>
-              </div>
             </div>
           </div>
         </div>
@@ -1423,7 +1967,7 @@ const resetLessonForm = () => {
         </div>
       )}
 
-      {/* Header with Admin Info */}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -1458,14 +2002,12 @@ const resetLessonForm = () => {
               <button
                 onClick={() => setViewMode("list")}
                 className={`p-2 rounded transition-colors ${viewMode === "list" ? "bg-white shadow" : "hover:bg-gray-200"}`}
-                title="List View"
               >
                 <List size={16} />
               </button>
               <button
                 onClick={() => setViewMode("grid")}
                 className={`p-2 rounded transition-colors ${viewMode === "grid" ? "bg-white shadow" : "hover:bg-gray-200"}`}
-                title="Grid View"
               >
                 <Grid size={16} />
               </button>
@@ -1508,7 +2050,7 @@ const resetLessonForm = () => {
         </div>
       </div>
 
-      {/* Course stats */}
+      {/* Course Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-white rounded-lg p-3 shadow border">
           <div className="text-xl font-bold text-gray-900">{courses.length}</div>
@@ -1534,7 +2076,7 @@ const resetLessonForm = () => {
         </div>
       </div>
 
-      {/* Courses display */}
+       {/* Courses display */}
       {viewMode === "grid" && !mobileView ? (
         // Grid View
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1804,8 +2346,7 @@ const resetLessonForm = () => {
           </div>
         </div>
       )}
-
-      {/* Add Lesson Modal with Enhanced Resources */}
+      {/* ========== ADD LESSON MODAL ========== */}
       {showAddLessonModal && selectedCourse && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-2 sm:p-4 z-50">
           <div className="bg-white rounded-xl sm:rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
@@ -1827,15 +2368,6 @@ const resetLessonForm = () => {
                 </button>
               </div>
 
-              {r2Error && (
-                <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-600" />
-                    <p className="text-sm text-red-700">{r2Error}</p>
-                  </div>
-                </div>
-              )}
-
               <form onSubmit={handleAddLesson} className="space-y-6">
                 {/* Basic Info */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1854,18 +2386,68 @@ const resetLessonForm = () => {
                     />
                   </div>
                   
+                  {/* Duration Picker */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
                       Duration
                     </label>
-                    <input
-                      type="text"
+                    <DurationPicker
                       value={lessonForm.duration}
-                      onChange={(e) => setLessonForm({...lessonForm, duration: e.target.value})}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="45 minutes"
-                      disabled={loading || r2Loading}
+                      onChange={(newDuration) => setLessonForm({...lessonForm, duration: newDuration})}
+                      lessonType={lessonForm.lessonType}
                     />
+                  </div>
+                </div>
+
+                {/* Lesson Type Selection */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Lesson Type
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setLessonForm({...lessonForm, lessonType: "video"})}
+                      className={`p-4 border rounded-lg text-center transition-colors ${
+                        lessonForm.lessonType === "video"
+                          ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200'
+                          : 'border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <Video className={`h-6 w-6 mx-auto mb-2 ${
+                        lessonForm.lessonType === "video" ? 'text-blue-600' : 'text-gray-400'
+                      }`} />
+                      <span className={`text-sm font-medium ${
+                        lessonForm.lessonType === "video" ? 'text-blue-700' : 'text-gray-700'
+                      }`}>
+                        Video Lesson
+                      </span>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Upload video or embed YouTube/Vimeo
+                      </p>
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={() => setLessonForm({...lessonForm, lessonType: "reading"})}
+                      className={`p-4 border rounded-lg text-center transition-colors ${
+                        lessonForm.lessonType === "reading"
+                          ? 'border-green-500 bg-green-50 ring-2 ring-green-200'
+                          : 'border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <BookOpen className={`h-6 w-6 mx-auto mb-2 ${
+                        lessonForm.lessonType === "reading" ? 'text-green-600' : 'text-gray-400'
+                      }`} />
+                      <span className={`text-sm font-medium ${
+                        lessonForm.lessonType === "reading" ? 'text-green-700' : 'text-gray-700'
+                      }`}>
+                        Reading Lesson
+                      </span>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Write or import from Word/PDF
+                      </p>
+                    </button>
                   </div>
                 </div>
 
@@ -1877,299 +2459,239 @@ const resetLessonForm = () => {
                   <textarea
                     value={lessonForm.description}
                     onChange={(e) => setLessonForm({...lessonForm, description: e.target.value})}
-                    rows={3}
+                    rows={2}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     placeholder="What will students learn in this lesson?"
                     disabled={loading || r2Loading}
                   />
                 </div>
 
-                {/* Video */}
-                <div className="border-t pt-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Youtube className="h-5 w-5 text-red-600" />
-                    <h4 className="font-medium text-gray-900">Video Content</h4>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Video URL (Optional)
-                        <span className="text-xs text-gray-500 ml-1">YouTube, Vimeo, or direct video link</span>
-                      </label>
-                      <input
-                        type="url"
-                        value={lessonForm.videoUrl}
-                        onChange={(e) => setLessonForm({...lessonForm, videoUrl: e.target.value})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="https://www.youtube.com/watch?v=... or https://vimeo.com/..."
-                        disabled={loading || r2Loading}
-                      />
-                      <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
-                        <Video className="h-3 w-3" />
-                        <span>Supports YouTube, Vimeo, or direct MP4/WebM links</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                {/* Conditional Content Based on Lesson Type */}
+{lessonForm.lessonType === "video" ? (
+  /* Video Content Section */
+  <div className="border-t pt-6">
+    <div className="flex items-center gap-2 mb-4">
+      <Video className="h-5 w-5 text-red-600" />
+      <h4 className="font-medium text-gray-900">Video Content</h4>
+    </div>
+    
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">
+        Video URL
+      </label>
+      <input
+        type="url"
+        value={lessonForm.videoUrl}
+        onChange={(e) => setLessonForm({...lessonForm, videoUrl: e.target.value})}
+        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        placeholder="https://www.youtube.com/watch?v=..."
+        disabled={loading || r2Loading}
+      />
+      <p className="text-xs text-gray-500 mt-1">
+        Supports YouTube, Vimeo, or direct MP4/WebM links
+      </p>
+    </div>
+  </div>
+) : (
+  /* Reading Content Section */
+  <div className="border-t pt-6">
+    <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center gap-2">
+        <BookOpen className="h-5 w-5 text-green-600" />
+        <h4 className="font-medium text-gray-900">Reading Content</h4>
+      </div>
+      
+      {/* Editor Mode Toggle */}
+      <div className="flex items-center gap-2 bg-gray-100 rounded-lg p-1">
+        <button
+          type="button"
+          onClick={() => {
+            if (editorMode === 'wysiwyg' && wysiwygContent) {
+              setLessonForm({
+                ...lessonForm,
+                markdown: htmlToMarkdown(wysiwygContent)
+              });
+            }
+            setEditorMode('wysiwyg');
+          }}
+          className={`px-3 py-1 text-sm rounded-md transition-colors ${
+            editorMode === 'wysiwyg' 
+              ? 'bg-white text-blue-600 shadow' 
+              : 'text-gray-600 hover:bg-gray-200'
+          }`}
+        >
+          Visual Editor
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (editorMode === 'wysiwyg' && lessonForm.markdown) {
+              setWysiwygContent(markdownToHtml(lessonForm.markdown));
+            }
+            setEditorMode('markdown');
+          }}
+          className={`px-3 py-1 text-sm rounded-md transition-colors ${
+            editorMode === 'markdown' 
+              ? 'bg-white text-blue-600 shadow' 
+              : 'text-gray-600 hover:bg-gray-200'
+          }`}
+        >
+          Markdown
+        </button>
+      </div>
+    </div>
 
-                {/* Enhanced Resources Section */}
-                <div className="border-t pt-6">
-                  <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center gap-2">
-                      <Folder className="h-5 w-5 text-blue-600" />
-                      <h4 className="font-medium text-gray-900">Learning Resources</h4>
-                      <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full flex items-center gap-1">
-                        <Cloud size={12} />
-                        Cloudflare R2
-                      </span>
-                    </div>
-                    <div className="text-sm text-gray-600">
-                      Total: {getTotalResources()} files
-                    </div>
-                  </div>
+    {/* File Import Section */}
+    <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4 mb-6">
+      <div className="flex items-center gap-2 mb-3">
+        <FileUp className="h-5 w-5 text-blue-600" />
+        <h5 className="font-medium text-blue-800">Import from Document</h5>
+      </div>
+      
+      <p className="text-sm text-blue-700 mb-4">
+        Upload a Word document (.docx) or PDF file to automatically convert to Markdown
+      </p>
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* DOCX Upload */}
+        <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+          r2Loading ? 'bg-blue-50 border-blue-300' : 'border-blue-300 hover:border-blue-500'
+        }`}>
+          <FileText className="h-8 w-8 text-blue-500 mx-auto mb-2" />
+          <p className="text-sm font-medium text-gray-700 mb-1">Word Document</p>
+          <p className="text-xs text-gray-500 mb-2">.docx</p>
+          
+          <label className="cursor-pointer">
+            <input
+              type="file"
+              accept=".docx"
+              onChange={(e) => {
+                const file = e.target.files[0];
+                if (file) {
+                  handleFileUploadAndConvert(file);
+                }
+              }}
+              className="hidden"
+              disabled={r2Loading}
+            />
+            <span className="inline-block px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 cursor-pointer">
+              Choose File
+            </span>
+          </label>
+        </div>
+        
+        {/* PDF Upload */}
+        <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+          r2Loading ? 'bg-red-50 border-red-300' : 'border-red-300 hover:border-red-500'
+        }`}>
+          <File className="h-8 w-8 text-red-500 mx-auto mb-2" />
+          <p className="text-sm font-medium text-gray-700 mb-1">PDF Document</p>
+          <p className="text-xs text-gray-500 mb-2">.pdf</p>
+          
+          <label className="cursor-pointer">
+            <input
+              type="file"
+              accept=".pdf"
+              onChange={(e) => {
+                const file = e.target.files[0];
+                if (file) {
+                  handleFileUploadAndConvert(file);
+                }
+              }}
+              className="hidden"
+              disabled={r2Loading}
+            />
+            <span className="inline-block px-3 py-1.5 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 cursor-pointer">
+              Choose File
+            </span>
+          </label>
+        </div>
+      </div>
+      
+      {/* Progress Bar */}
+      {uploadProgress > 0 && uploadProgress < 100 && (
+        <div className="mt-4">
+          <div className="flex justify-between text-xs text-gray-600 mb-1">
+            <span>Converting...</span>
+            <span>{Math.round(uploadProgress)}%</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2">
+            <div 
+              className="bg-green-600 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+      
+      {/* Original file indicator */}
+      {lessonForm.originalFile && (
+        <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="h-4 w-4 text-green-600" />
+            <span className="text-sm text-green-700">
+              Original file: {lessonForm.originalFile.name}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLessonForm(prev => ({
+              ...prev,
+              originalFile: null,
+              originalFileUrl: null,
+              originalFileKey: null
+            }))}
+            className="text-xs text-red-600 hover:text-red-800"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+    </div>
 
-                  {/* Add Resource Form */}
-                  <div className="bg-gray-50 rounded-xl p-4 mb-6">
-                    <h5 className="font-medium text-gray-900 mb-4">Add New Resource</h5>
-                    
-                    <div className="space-y-4">
-                      {/* Resource Type */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Resource Type
-                        </label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {['slides', 'document', 'template'].map((type) => (
-                            <button
-                              type="button"
-                              key={type}
-                              onClick={() => setNewResource({...newResource, category: type})}
-                              className={`px-3 py-2 text-sm rounded-lg border transition-colors ${
-                                newResource.category === type 
-                                  ? 'bg-blue-100 border-blue-500 text-blue-700' 
-                                  : 'border-gray-300 hover:bg-gray-50'
-                              }`}
-                              disabled={r2Loading}
-                            >
-                              {type.charAt(0).toUpperCase() + type.slice(1)}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+    {/* Conditional Editor Based on Mode */}
+    {editorMode === 'markdown' ? (
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Lesson Content (Markdown)
+        </label>
+        <MarkdownEditor 
+          value={lessonForm.markdown || ''}
+          onChange={(value) => setLessonForm({...lessonForm, markdown: value})}
+        />
+      </div>
+    ) : (
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Lesson Content (Rich Text Editor)
+        </label>
+        <TipTapEditor 
+          value={wysiwygContent || markdownToHtml(lessonForm.markdown || '')}
+          onChange={(html) => {
+            setWysiwygContent(html);
+            // Convert HTML to markdown for storage
+            setLessonForm({
+              ...lessonForm,
+              markdown: htmlToMarkdown(html)
+            });
+          }}
+          placeholder="Write your lesson content here... Use the toolbar above to format."
+        />
+      </div>
+    )}
 
-                      {/* Resource Name */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Resource Name *
-                        </label>
-                        <input
-                          type="text"
-                          value={newResource.name}
-                          onChange={(e) => setNewResource({...newResource, name: e.target.value})}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                          placeholder="e.g., Marketing Strategy Template"
-                          disabled={r2Loading}
-                        />
-                      </div>
+    {/* Word Count */}
+    {lessonForm.markdown && (
+      <div className="text-xs text-gray-500 flex justify-end mt-2">
+        <span>Words: {lessonForm.markdown.split(/\s+/).filter(w => w.length > 0).length}</span>
+        <span className="mx-2">•</span>
+        <span>Characters: {lessonForm.markdown.length}</span>
+      </div>
+    )}
+  </div>
+)}
 
-                      {/* File Upload */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          File Upload *
-                        </label>
-                        <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
-                          r2Loading 
-                            ? 'border-blue-300 bg-blue-50' 
-                            : newResource.file 
-                            ? 'border-green-300 bg-green-50' 
-                            : 'border-gray-300 hover:border-blue-400'
-                        }`}>
-                          {r2Loading ? (
-                            <div className="py-4">
-                              <Loader2 className="h-6 w-6 text-blue-600 animate-spin mx-auto mb-2" />
-                              <p className="text-sm text-gray-600">Uploading to Cloudflare R2...</p>
-                              
-                              {/* Progress bar */}
-                              {uploadProgress > 0 && (
-                                <div className="mt-4">
-                                  <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                    <span>Progress</span>
-                                    <span>{Math.round(uploadProgress)}%</span>
-                                  </div>
-                                  <div className="w-full bg-gray-200 rounded-full h-2">
-                                    <div 
-                                      className="bg-green-600 h-2 rounded-full transition-all duration-300"
-                                      style={{ width: `${uploadProgress}%` }}
-                                    ></div>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          ) : newResource.file ? (
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between bg-white p-3 rounded border">
-                                <div className="flex items-center gap-3">
-                                  <FileIcon type={getFileType(newResource.file.name)} />
-                                  <div>
-                                    <p className="text-sm font-medium truncate">{newResource.file.name}</p>
-                                    <p className="text-xs text-gray-500">
-                                      {(newResource.file.size / 1024 / 1024).toFixed(2)} MB
-                                    </p>
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setNewResource({...newResource, file: null});
-                                    if (fileInputRef.current) fileInputRef.current.value = '';
-                                  }}
-                                  className="text-red-600 hover:text-red-800"
-                                  disabled={r2Loading}
-                                >
-                                  <X size={16} />
-                                </button>
-                              </div>
-                              <p className="text-xs text-green-600 flex items-center gap-1">
-                                <CheckCircle size={12} />
-                                File ready to upload to Cloudflare R2
-                              </p>
-                            </div>
-                          ) : (
-                            <label className="cursor-pointer">
-                              <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                              <p className="text-sm text-gray-600">Click to upload or drag & drop</p>
-                              <p className="text-xs text-gray-500 mt-1">
-                                Files will be stored in Cloudflare R2 (Max 50MB)
-                              </p>
-                              <input
-                                ref={fileInputRef}
-                                type="file"
-                                onChange={(e) => {
-                                  const file = e.target.files[0];
-                                  if (file) {
-                                    if (file.size > 50 * 1024 * 1024) {
-                                      alert('File size must be less than 50MB');
-                                      return;
-                                    }
-                                    setNewResource({
-                                      ...newResource,
-                                      file,
-                                      type: getFileType(file.name)
-                                    });
-                                  }
-                                }}
-                                className="hidden"
-                                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.jpg,.jpeg,.png,.gif,.mp4,.webm"
-                                disabled={r2Loading}
-                              />
-                            </label>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Description */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Description (Optional)
-                        </label>
-                        <textarea
-                          value={newResource.description}
-                          onChange={(e) => setNewResource({...newResource, description: e.target.value})}
-                          rows={2}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                          placeholder="Brief description of this resource..."
-                          disabled={r2Loading}
-                        />
-                      </div>
-
-                      {/* Options */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={newResource.downloadable}
-                            onChange={(e) => setNewResource({...newResource, downloadable: e.target.checked})}
-                            className="rounded"
-                            disabled={r2Loading}
-                          />
-                          <label className="text-sm">Allow Download</label>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={newResource.viewable}
-                            onChange={(e) => setNewResource({...newResource, viewable: e.target.checked})}
-                            className="rounded"
-                            disabled={r2Loading}
-                          />
-                          <label className="text-sm">Allow Preview</label>
-                        </div>
-                      </div>
-
-                      {/* Add Button */}
-                      <button
-                        type="button"
-                        onClick={handleAddResource}
-                        disabled={!newResource.name || !newResource.file || r2Loading}
-                        className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                      >
-                        {r2Loading ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Uploading...
-                          </>
-                        ) : (
-                          <>
-                            <Cloud size={16} />
-                            Upload to Cloudflare R2
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Resource Lists */}
-                  <div className="space-y-6">
-                    {/* Slides */}
-                    <div>
-                      <div className="flex items-center gap-2 mb-3">
-                        <Presentation className="h-5 w-5 text-orange-600" />
-                        <h5 className="font-medium text-gray-900">Slides & Presentations</h5>
-                        <span className="text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded-full">
-                          {lessonForm.slides.length}
-                        </span>
-                      </div>
-                      {renderResourceList(lessonForm.slides, 'slides')}
-                    </div>
-
-                    {/* Documents */}
-                    <div>
-                      <div className="flex items-center gap-2 mb-3">
-                        <FileText className="h-5 w-5 text-blue-600" />
-                        <h5 className="font-medium text-gray-900">Documents & PDFs</h5>
-                        <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
-                          {lessonForm.documents.length}
-                        </span>
-                      </div>
-                      {renderResourceList(lessonForm.documents, 'documents')}
-                    </div>
-
-                    {/* Templates */}
-                    <div>
-                      <div className="flex items-center gap-2 mb-3">
-                        <FileSpreadsheet className="h-5 w-5 text-green-600" />
-                        <h5 className="font-medium text-gray-900">Templates & Worksheets</h5>
-                        <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
-                          {lessonForm.templates.length}
-                        </span>
-                      </div>
-                      {renderResourceList(lessonForm.templates, 'templates')}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Action buttons */}
+                {/* Action Buttons */}
                 <div className="flex flex-col sm:flex-row justify-end gap-3 pt-6 border-t">
                   <button
                     type="button"
@@ -2184,8 +2706,13 @@ const resetLessonForm = () => {
                   </button>
                   <button
                     type="submit"
-                    disabled={loading || r2Loading || !lessonForm.title}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
+                    disabled={
+                      loading || 
+                      r2Loading || 
+                      !lessonForm.title ||
+                      (lessonForm.lessonType === "video" && !lessonForm.videoUrl)
+                    }
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {loading || r2Loading ? (
                       <>
@@ -2205,7 +2732,6 @@ const resetLessonForm = () => {
           </div>
         </div>
       )}
-
       {/* Create Course Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-2 sm:p-4 z-50">
@@ -2334,14 +2860,14 @@ const resetLessonForm = () => {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {/* <label className="block text-sm font-medium text-gray-700 mb-1">
                       Price ($)
-                    </label>
+                    </label> */}
                     <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      {/* <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                         <span className="text-gray-500">$</span>
-                      </div>
-                      <input
+                      </div> */}
+                      {/* <input
                         type="number"
                         min="0"
                         step="0.01"
@@ -2350,7 +2876,7 @@ const resetLessonForm = () => {
                         className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         placeholder="0.00"
                         disabled={loading || uploading}
-                      />
+                      /> */}
                       <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
                         <div className="flex items-center gap-2">
                           <input
@@ -2672,5 +3198,6 @@ const resetLessonForm = () => {
         </div>
       )}
     </div>
+    
   );
 }
