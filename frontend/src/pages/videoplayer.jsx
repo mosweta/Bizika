@@ -68,6 +68,7 @@ const EdpuzzleVideoPlayer = ({
   const [showCenterPlayButton, setShowCenterPlayButton] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [dragPosition, setDragPosition] = useState(0);
+  const [isInteractingWithSettings, setIsInteractingWithSettings] = useState(false);
   
   const playbackRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   
@@ -140,11 +141,17 @@ const EdpuzzleVideoPlayer = ({
     // Hide center play button when playing, show when paused
     setShowCenterPlayButton(playerState !== 1);
     
+    // Show controls when playback starts/pauses
+    resetControlsTimeout();
+    
     // Handle video end
     if (playerState === 0 && !hasEndedRef.current) {
       hasEndedRef.current = true;
       hasAutoCompletedRef.current = true;
       console.log('🎬 Video playback ended');
+      
+      // Show controls when video ends
+      setShowControls(true);
       
       setTimeout(() => {
         onVideoEndRef.current?.();
@@ -249,6 +256,8 @@ const EdpuzzleVideoPlayer = ({
         setShowCenterPlayButton(false);
       }
     }
+    // Show controls and reset timer
+    resetControlsTimeout();
   }, [isPlaying]);
 
   const seekTo = useCallback((seconds) => {
@@ -263,6 +272,7 @@ const EdpuzzleVideoPlayer = ({
       const newTime = Math.max(0, Math.min(currentTime + seconds, duration));
       seekTo(newTime);
     }
+    resetControlsTimeout();
   }, [currentTime, duration, seekTo]);
 
   // Volume controls
@@ -273,6 +283,7 @@ const EdpuzzleVideoPlayer = ({
       playerRef.current.setVolume(newVolume);
       setIsMuted(newVolume === 0);
     }
+    resetControlsTimeout();
   }, []);
 
   const toggleMute = useCallback(() => {
@@ -285,9 +296,10 @@ const EdpuzzleVideoPlayer = ({
         setIsMuted(true);
       }
     }
+    resetControlsTimeout();
   }, [isMuted]);
 
-  // Fullscreen - only one button now
+  // Fullscreen
   const toggleFullscreen = useCallback(async () => {
     if (!containerRef.current) return;
     
@@ -311,6 +323,7 @@ const EdpuzzleVideoPlayer = ({
     } catch (error) {
       console.error('Fullscreen error:', error);
     }
+    resetControlsTimeout();
   }, []);
 
   // Playback rate
@@ -320,12 +333,16 @@ const EdpuzzleVideoPlayer = ({
       playerRef.current.setPlaybackRate(rate);
     }
     setShowSettings(false);
+    resetControlsTimeout();
   }, []);
 
   // Fullscreen change listener
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
+      // Show controls when entering/exiting fullscreen
+      setShowControls(true);
+      resetControlsTimeout();
     };
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -361,6 +378,8 @@ const EdpuzzleVideoPlayer = ({
     e.preventDefault();
     isDraggingRef.current = true;
     setIsDragging(true);
+    // Keep controls visible while dragging
+    setShowControls(true);
     
     const updateDragPosition = (clientX) => {
       if (!progressBarRef.current || !duration) return;
@@ -389,6 +408,9 @@ const EdpuzzleVideoPlayer = ({
       isDraggingRef.current = false;
       setIsDragging(false);
       
+      // Reset controls timeout after dragging
+      resetControlsTimeout();
+      
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
@@ -401,6 +423,8 @@ const EdpuzzleVideoPlayer = ({
     e.preventDefault();
     isDraggingRef.current = true;
     setIsDragging(true);
+    // Keep controls visible while dragging
+    setShowControls(true);
     
     const updateTouchPosition = (clientX) => {
       if (!progressBarRef.current || !duration) return;
@@ -430,6 +454,9 @@ const EdpuzzleVideoPlayer = ({
       isDraggingRef.current = false;
       setIsDragging(false);
       
+      // Reset controls timeout after dragging
+      resetControlsTimeout();
+      
       document.removeEventListener('touchmove', handleTouchMove);
       document.removeEventListener('touchend', handleTouchEnd);
     };
@@ -438,30 +465,43 @@ const EdpuzzleVideoPlayer = ({
     document.addEventListener('touchend', handleTouchEnd);
   }, [duration, seekTo]);
 
-  // Control visibility timeout
-  const resetControlsTimeout = useCallback(() => {
-    setShowControls(true);
-    
-    if (hideControlsTimerRef.current) {
-      clearTimeout(hideControlsTimerRef.current);
-    }
-    
-    if (isPlaying && !isDragging) {
-      hideControlsTimerRef.current = setTimeout(() => {
-        setShowControls(false);
-        if (!showSettings) {
-          setShowControls(false);
-        }
-      }, 3000);
-    }
-  }, [isPlaying, showSettings, isDragging]);
+  // Control visibility timeout - auto-hide after 3 seconds whenever video is playing
+const resetControlsTimeout = useCallback(() => {
+  setShowControls(true);
+  
+  if (hideControlsTimerRef.current) {
+    clearTimeout(hideControlsTimerRef.current);
+  }
+  
+  // Auto-hide after 3 seconds if video is playing and not dragging
+  if (isPlaying && !isDragging && !isInteractingWithSettings) {
+    hideControlsTimerRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 3000); // 3 seconds timeout for all devices and modes
+  }
+}, [isPlaying, isDragging, isInteractingWithSettings]);
+
 
   // Touch events for mobile
   const handleTouchStart = useCallback((e) => {
     setTouchStartTime(Date.now());
     setTouchStartX(e.touches[0].clientX);
-    resetControlsTimeout();
-  }, [resetControlsTimeout]);
+    
+    // Cancel any pending hide timer
+    if (hideControlsTimerRef.current) {
+      clearTimeout(hideControlsTimerRef.current);
+    }
+    
+    // Show controls on touch
+    setShowControls(true);
+  }, []);
+
+  const handleTouchMove = useCallback((e) => {
+    // Cancel hide timer while touching/moving
+    if (hideControlsTimerRef.current) {
+      clearTimeout(hideControlsTimerRef.current);
+    }
+  }, []);
 
   const handleTouchEnd = useCallback((e) => {
     if (!touchStartTime || !touchStartX) return;
@@ -471,23 +511,17 @@ const EdpuzzleVideoPlayer = ({
     const touchDuration = touchEndTime - touchStartTime;
     const touchDistance = touchEndX - touchStartX;
     
-    // Short tap (less than 200ms) - toggle play/pause
+    // Short tap (less than 200ms) - toggle play/pause and manage controls
     if (touchDuration < 200 && Math.abs(touchDistance) < 20) {
       togglePlay();
     }
     
-    // Swipe left/right for navigation
-    if (Math.abs(touchDistance) > 50) {
-      if (touchDistance > 0 && hasPreviousLesson) {
-        onPreviousLesson?.();
-      } else if (touchDistance < 0 && hasNextLesson) {
-        onNextLesson?.();
-      }
-    }
+    // Reset timeout after touch ends
+    resetControlsTimeout();
     
     setTouchStartTime(null);
     setTouchStartX(null);
-  }, [touchStartTime, touchStartX, togglePlay, hasPreviousLesson, hasNextLesson, onPreviousLesson, onNextLesson]);
+  }, [touchStartTime, touchStartX, togglePlay, resetControlsTimeout]);
 
   // Cleanup timers
   useEffect(() => {
@@ -522,10 +556,11 @@ const EdpuzzleVideoPlayer = ({
       className="relative bg-black rounded-xl overflow-hidden group select-none"
       onMouseMove={resetControlsTimeout}
       onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* YouTube Player - fixed within container */}
+      {/* YouTube Player */}
       <div className="aspect-video">
         <YouTube
           videoId={videoId}
@@ -538,7 +573,7 @@ const EdpuzzleVideoPlayer = ({
         />
       </div>
 
-      {/* YouTube-style Center Play Button - stays within video */}
+      {/* YouTube-style Center Play Button */}
       {(showCenterPlayButton || (!isPlaying && showControls)) && (
         <button
           onClick={(e) => {
@@ -568,7 +603,7 @@ const EdpuzzleVideoPlayer = ({
         </button>
       )}
 
-      {/* Single Fullscreen Button - positioned absolutely within video container */}
+      {/* Fullscreen Button */}
       {(showControls || isMobile) && (
         <button
           onClick={toggleFullscreen}
@@ -576,184 +611,204 @@ const EdpuzzleVideoPlayer = ({
                      text-white bg-black bg-opacity-60 hover:bg-red-600 
                      rounded-full backdrop-blur-sm z-20 transition-all duration-200
                      active:bg-opacity-90"
+          style={{ opacity: showControls ? 1 : 0, transition: 'opacity 0.2s' }}
           title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
         >
           {isFullscreen ? <Minimize size={isMobile ? 18 : 20} /> : <Maximize size={isMobile ? 18 : 20} />}
         </button>
       )}
 
-      {/* Top Controls - positioned within video */}
-      {showControls && (
-        <div className="absolute top-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-b from-black/90 to-transparent z-10">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 sm:gap-4">
-              {hasPreviousLesson && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onPreviousLesson?.();
-                  }}
-                  className="p-1.5 sm:p-2 bg-black bg-opacity-50 text-white 
-                             rounded-full hover:bg-red-600 backdrop-blur-sm
-                             active:bg-opacity-90 transition-all"
-                  title="Previous lesson"
-                >
-                  <ChevronLeft size={isMobile ? 16 : 20} />
-                </button>
-              )}
-              
-              <div className="text-white">
-                <h3 className="font-medium text-xs sm:text-base truncate max-w-[150px] sm:max-w-md">
-                  {lessonTitle}
-                </h3>
-                <div className="flex items-center gap-1 sm:gap-2 text-2xs sm:text-xs text-gray-300">
-                  <Clock size={isMobile ? 10 : 12} />
-                  <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
-                  {isDragging && (
-                    <span className="text-yellow-400">
-                      {Math.round(displayProgress)}%
-                    </span>
-                  )}
-                </div>
+      {/* Top Controls */}
+      <div 
+        className="absolute top-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-b from-black/90 to-transparent z-10"
+        style={{ opacity: showControls ? 1 : 0, transition: 'opacity 0.2s' }}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 sm:gap-4">
+            {hasPreviousLesson && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPreviousLesson?.();
+                  resetControlsTimeout();
+                }}
+                className="p-1.5 sm:p-2 bg-black bg-opacity-50 text-white 
+                           rounded-full hover:bg-red-600 backdrop-blur-sm
+                           active:bg-opacity-90 transition-all"
+                title="Previous lesson"
+              >
+                <ChevronLeft size={isMobile ? 16 : 20} />
+              </button>
+            )}
+            
+            <div className="text-white">
+              <h3 className="font-medium text-xs sm:text-base truncate max-w-[150px] sm:max-w-md">
+                {lessonTitle}
+              </h3>
+              <div className="flex items-center gap-1 sm:gap-2 text-2xs sm:text-xs text-gray-300">
+                <Clock size={isMobile ? 10 : 12} />
+                <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
+                {isDragging && (
+                  <span className="text-yellow-400">
+                    {Math.round(displayProgress)}%
+                  </span>
+                )}
               </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Bottom Controls - positioned within video */}
-      {showControls && (
-        <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 to-transparent z-10">
-          {/* Draggable Progress Bar */}
-          <div 
-            ref={progressBarRef}
-            className="relative mb-2 sm:mb-4 cursor-pointer group touch-none" 
-            onMouseDown={handleProgressMouseDown}
-            onTouchStart={handleProgressTouchStart}
-          >
-            {/* Background bar */}
-            <div className="w-full h-2 sm:h-2.5 bg-gray-600/50 rounded-full overflow-hidden">
-              {/* Progress fill */}
-              <div 
-                className="h-full bg-red-600 rounded-full transition-all duration-75"
-                style={{ width: `${displayProgress}%` }}
-              />
-            </div>
-            
-            {/* Progress handle - shows on hover/drag */}
+      {/* Bottom Controls */}
+      <div 
+        className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 to-transparent z-10"
+        style={{ opacity: showControls ? 1 : 0, transition: 'opacity 0.2s' }}
+      >
+        {/* Draggable Progress Bar */}
+        <div 
+          ref={progressBarRef}
+          className="relative mb-2 sm:mb-4 cursor-pointer group touch-none" 
+          onMouseDown={handleProgressMouseDown}
+          onTouchStart={handleProgressTouchStart}
+        >
+          {/* Background bar */}
+          <div className="w-full h-2 sm:h-2.5 bg-gray-600/50 rounded-full overflow-hidden">
+            {/* Progress fill */}
             <div 
-              className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 sm:w-4 sm:h-4 
-                         bg-red-600 rounded-full shadow-lg border-2 border-white
-                         transition-opacity duration-200 ${
-                           isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                         }`}
-              style={{ left: `calc(${displayProgress}% - ${isMobile ? 6 : 8}px)` }}
+              className="h-full bg-red-600 rounded-full transition-all duration-75"
+              style={{ width: `${displayProgress}%` }}
             />
+          </div>
+          
+          {/* Progress handle */}
+          <div 
+            className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 sm:w-4 sm:h-4 
+                       bg-red-600 rounded-full shadow-lg border-2 border-white
+                       transition-opacity duration-200 ${
+                         isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                       }`}
+            style={{ left: `calc(${displayProgress}% - ${isMobile ? 6 : 8}px)` }}
+          />
+          
+          {/* Time preview on hover */}
+          {!isDragging && showControls && (
+            <div 
+              className="absolute -top-6 transform -translate-x-1/2 bg-black/80 
+                         text-white text-xs px-2 py-1 rounded opacity-0 
+                         group-hover:opacity-100 transition-opacity pointer-events-none"
+              style={{ left: `${displayProgress}%` }}
+            >
+              {formatTime((displayProgress / 100) * duration)}
+            </div>
+          )}
+        </div>
+
+        {/* Control Buttons */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1 sm:gap-3">
+            <button
+              onClick={togglePlay}
+              className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                         rounded-full active:bg-opacity-30 transition-all"
+              title={isPlaying ? "Pause" : "Play"}
+            >
+              {isPlaying ? <Pause size={isMobile ? 18 : 20} /> : <Play size={isMobile ? 18 : 20} />}
+            </button>
             
-            {/* Time preview on hover */}
-            {!isDragging && showControls && (
-              <div 
-                className="absolute -top-6 transform -translate-x-1/2 bg-black/80 
-                           text-white text-xs px-2 py-1 rounded opacity-0 
-                           group-hover:opacity-100 transition-opacity pointer-events-none"
-                style={{ left: `${displayProgress}%` }}
-              >
-                {formatTime((displayProgress / 100) * duration)}
+            <button
+              onClick={() => skip(-10)}
+              className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                         rounded-full active:bg-opacity-30 transition-all"
+              title="Rewind 10 seconds"
+            >
+              <SkipBack size={isMobile ? 16 : 18} />
+            </button>
+            
+            <button
+              onClick={() => skip(10)}
+              className="p-1.5 sm:p-2 text-white hover:bg-red-600 
+                         rounded-full active:bg-opacity-30 transition-all"
+              title="Forward 10 seconds"
+            >
+              <SkipForward size={isMobile ? 16 : 18} />
+            </button>
+            
+            {!isMobile && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={toggleMute}
+                  className="p-2 text-white hover:bg-red-600 rounded-full"
+                  title={isMuted ? "Unmute" : "Mute"}
+                >
+                  {isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
+                </button>
+                
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={volume}
+                  onChange={handleVolumeChange}
+                  className="w-16 sm:w-20 accent-red-600"
+                  title="Volume"
+                />
               </div>
             )}
           </div>
-
-          {/* Control Buttons */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 sm:gap-3">
+          
+          {/* Right side controls */}
+          <div className="flex items-center gap-1 sm:gap-2">
+            {hasNextLesson && (
               <button
-                onClick={togglePlay}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNextLesson?.();
+                  resetControlsTimeout();
+                }}
                 className="p-1.5 sm:p-2 text-white hover:bg-red-600 
                            rounded-full active:bg-opacity-30 transition-all"
-                title={isPlaying ? "Pause" : "Play"}
+                title="Next lesson"
               >
-                {isPlaying ? <Pause size={isMobile ? 18 : 20} /> : <Play size={isMobile ? 18 : 20} />}
+                <ChevronRight size={isMobile ? 16 : 20} />
               </button>
-              
-              <button
-                onClick={() => skip(-10)}
-                className="p-1.5 sm:p-2 text-white hover:bg-red-600 
-                           rounded-full active:bg-opacity-30 transition-all"
-                title="Rewind 10 seconds"
-              >
-                <SkipBack size={isMobile ? 16 : 18} />
-              </button>
-              
-              <button
-                onClick={() => skip(10)}
-                className="p-1.5 sm:p-2 text-white hover:bg-red-600 
-                           rounded-full active:bg-opacity-30 transition-all"
-                title="Forward 10 seconds"
-              >
-                <SkipForward size={isMobile ? 16 : 18} />
-              </button>
-              
-              {!isMobile && (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={toggleMute}
-                    className="p-2 text-white hover:bg-red-600 rounded-full"
-                    title={isMuted ? "Unmute" : "Mute"}
-                  >
-                    {isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}
-                  </button>
-                  
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={volume}
-                    onChange={handleVolumeChange}
-                    className="w-16 sm:w-20 accent-red-600"
-                    title="Volume"
-                  />
-                </div>
-              )}
-            </div>
+            )}
             
-            {/* Right side - NO fullscreen button here anymore */}
-            <div className="flex items-center gap-1 sm:gap-2">
-              {hasNextLesson && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onNextLesson?.();
-                  }}
-                  className="p-1.5 sm:p-2 text-white hover:bg-red-600 
-                             rounded-full active:bg-opacity-30 transition-all"
-                  title="Next lesson"
-                >
-                  <ChevronRight size={isMobile ? 16 : 20} />
-                </button>
-              )}
-              
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className={`p-1.5 sm:p-2 rounded-full transition-all ${
-                  showSettings 
-                    ? 'bg-red-600 text-white' 
-                    : 'text-white hover:bg-red-600 active:bg-opacity-30'
-                }`}
-                title="Settings"
-              >
-                <Settings size={isMobile ? 16 : 20} />
-              </button>
-            </div>
+            <button
+              onClick={() => {
+                setShowSettings(!showSettings);
+                setIsInteractingWithSettings(!showSettings);
+                resetControlsTimeout();
+              }}
+              className={`p-1.5 sm:p-2 rounded-full transition-all ${
+                showSettings 
+                  ? 'bg-red-600 text-white' 
+                  : 'text-white hover:bg-red-600 active:bg-opacity-30'
+              }`}
+              title="Settings"
+            >
+              <Settings size={isMobile ? 16 : 20} />
+            </button>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Minimal Mobile Settings Menu - Smaller and more compact */}
+      {/* Mobile Settings Menu */}
       {showSettings && isMobile && (
         <div 
           className="absolute inset-x-0 bottom-0 bg-gray-900/95 backdrop-blur-md text-white 
                      rounded-t-xl shadow-2xl z-40 border-t border-gray-800 animate-slide-up"
           onClick={(e) => e.stopPropagation()}
+          onTouchStart={() => {
+            setIsInteractingWithSettings(true);
+            // Cancel hide timer when interacting with settings
+            if (hideControlsTimerRef.current) {
+              clearTimeout(hideControlsTimerRef.current);
+            }
+          }}
+          onTouchEnd={() => {
+            setIsInteractingWithSettings(false);
+            resetControlsTimeout();
+          }}
         >
           {/* Handle bar */}
           <div className="flex justify-center pt-2 pb-1">
@@ -764,7 +819,11 @@ const EdpuzzleVideoPlayer = ({
             <div className="flex items-center justify-between mb-2">
               <h4 className="font-medium text-sm">Speed</h4>
               <button
-                onClick={() => setShowSettings(false)}
+                onClick={() => {
+                  setShowSettings(false);
+                  setIsInteractingWithSettings(false);
+                  resetControlsTimeout();
+                }}
                 className="p-1.5 -mr-1.5 text-gray-400 hover:text-white rounded-full"
                 aria-label="Close settings"
               >
@@ -772,7 +831,7 @@ const EdpuzzleVideoPlayer = ({
               </button>
             </div>
             
-            {/* Speed options - horizontal scroll, smaller */}
+            {/* Speed options */}
             <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
               {playbackRates.map((rate) => (
                 <button
@@ -793,7 +852,7 @@ const EdpuzzleVideoPlayer = ({
               ))}
             </div>
             
-            {/* Volume control - more compact */}
+            {/* Volume control */}
             <div className="mt-3 pt-2 border-t border-gray-800">
               <div className="flex items-center gap-2">
                 <button
@@ -820,17 +879,31 @@ const EdpuzzleVideoPlayer = ({
         </div>
       )}
 
-      {/* Desktop Settings Menu - Red themed, more compact */}
+      {/* Desktop Settings Menu */}
       {showSettings && !isMobile && (
         <div 
           className="absolute bottom-16 right-4 w-48 bg-gray-900 text-white 
                      rounded-lg shadow-2xl p-3 z-20 border border-gray-800"
           onClick={(e) => e.stopPropagation()}
+          onMouseEnter={() => {
+            setIsInteractingWithSettings(true);
+            if (hideControlsTimerRef.current) {
+              clearTimeout(hideControlsTimerRef.current);
+            }
+          }}
+          onMouseLeave={() => {
+            setIsInteractingWithSettings(false);
+            resetControlsTimeout();
+          }}
         >
           <div className="flex items-center justify-between mb-2">
             <h4 className="font-medium text-xs uppercase tracking-wider text-gray-400">Speed</h4>
             <button
-              onClick={() => setShowSettings(false)}
+              onClick={() => {
+                setShowSettings(false);
+                setIsInteractingWithSettings(false);
+                resetControlsTimeout();
+              }}
               className="p-1 hover:bg-gray-800 rounded-lg transition-colors"
             >
               <X size={14} />
@@ -859,14 +932,7 @@ const EdpuzzleVideoPlayer = ({
         </div>
       )}
 
-      {/* Mobile hint */}
-      {isMobile && showControls && !isDragging && (
-        <div className="absolute bottom-20 left-0 right-0 flex justify-center pointer-events-none">
-          <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-sm">
-            Tap to play/pause • Swipe ← → for lessons
-          </div>
-        </div>
-      )}
+      
 
       {/* Add animation keyframes */}
       <style jsx>{`
