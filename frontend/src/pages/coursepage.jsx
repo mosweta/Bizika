@@ -20,6 +20,7 @@ import {
   BookOpen,
   Clock,
   Users,
+  List,
   CheckCircle,
   ChevronLeft,
   FileText,
@@ -193,9 +194,6 @@ const ResourceCard = ({ resource, lessonTitle, onDownload, onPreview, downloadin
   );
 };
 
-// =============================================
-// ACCESSIBLE MARKDOWN READING LESSON COMPONENT
-// =============================================
 const MarkdownLesson = ({ 
   lesson, 
   lessonId, 
@@ -214,13 +212,62 @@ const MarkdownLesson = ({
   const [fontFamily, setFontFamily] = useState('default');
   const [theme, setTheme] = useState('light');
   const [showSettings, setShowSettings] = useState(false);
+  const [showToc, setShowToc] = useState(false);
+  const [toc, setToc] = useState([]);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [headerHeight, setHeaderHeight] = useState(60);
+  const [footerHeight, setFooterHeight] = useState(70);
   const contentRef = useRef(null);
+  const containerRef = useRef(null);
+  const headerRef = useRef(null);
+  const footerRef = useRef(null);
+
+  // Check mobile on resize
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Measure header and footer heights
+  useEffect(() => {
+    if (headerRef.current) {
+      setHeaderHeight(headerRef.current.offsetHeight);
+    }
+    if (footerRef.current) {
+      setFooterHeight(footerRef.current.offsetHeight);
+    }
+  }, [showSettings, showToc, isFullscreen]);
+
+  // Extract table of contents from markdown
+  useEffect(() => {
+    if (lesson.markdown) {
+      const headings = lesson.markdown.match(/^#{1,3} .+$/gm) || [];
+      const tocItems = headings.map(heading => {
+        const level = heading.match(/^#+/)[0].length;
+        const title = heading.replace(/^#+\s/, '');
+        const id = title.toLowerCase().replace(/[^\w]+/g, '-');
+        return { level, title, id };
+      });
+      setToc(tocItems);
+    }
+  }, [lesson.markdown]);
 
   // Font size mapping
   const fontSizeClasses = {
-    small: 'text-base',
-    medium: 'text-lg',
-    large: 'text-xl',
+    small: 'text-sm sm:text-base',
+    medium: 'text-base sm:text-lg',
+    large: 'text-lg sm:text-xl',
+  };
+
+  // Line height mapping
+  const lineHeightClasses = {
+    small: 'leading-relaxed',
+    medium: 'leading-relaxed',
+    large: 'leading-loose',
   };
 
   // Font family mapping
@@ -235,6 +282,14 @@ const MarkdownLesson = ({
     light: 'bg-white text-gray-900',
     sepia: 'bg-amber-50 text-gray-900',
     dark: 'bg-gray-900 text-gray-100',
+  };
+
+  // Calculate dynamic heights based on measured header/footer
+  const getContentHeight = () => {
+    if (isFullscreen) {
+      return `calc(100vh - ${headerHeight}px)`;
+    }
+    return `calc(100vh - ${headerHeight + footerHeight}px)`;
   };
 
   // Track scroll position for progress
@@ -257,183 +312,480 @@ const MarkdownLesson = ({
     }
   }, [lessonId, onMarkComplete, hasMarkedComplete, enrollment]);
 
+  // Get display duration
+  const getDisplayDuration = () => {
+    if (lesson.duration) return lesson.duration;
+    return `${readingTime} min read`;
+  };
+
   // Calculate reading time
   const readingTime = lesson.markdown 
     ? Math.ceil(lesson.markdown.split(/\s+/).length / 200) 
     : 0;
 
+  // Toggle fullscreen
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current?.requestFullscreen();
+        setIsFullscreen(true);
+        setShowSettings(false);
+        setShowToc(false);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (error) {
+      console.error("Fullscreen error:", error);
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+      if (!document.fullscreenElement) {
+        setShowSettings(false);
+        setShowToc(false);
+      }
+    };
+    
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   // Determine next action button text and handler
   const getNextButton = () => {
     if (hasNextLesson) {
-      return { text: "Next Lesson →", handler: onNextLesson };
+      return { text: "Next", handler: onNextLesson };
     } else if (hasQuiz) {
-      return { text: "Take Quiz →", handler: onTakeQuiz };
+      return { text: "Quiz", handler: onTakeQuiz };
     } else {
-      return { text: "Course Complete 🎉", handler: () => {} };
+      return { text: "Complete", handler: () => {} };
     }
   };
 
   const nextButton = getNextButton();
 
+  // Scroll to heading
+  const scrollToHeading = (id) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth' });
+      setShowToc(false);
+    }
+  };
+
+  // Close panels when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showSettings && !event.target.closest('.settings-panel') && !event.target.closest('.settings-button')) {
+        setShowSettings(false);
+      }
+      if (showToc && !event.target.closest('.toc-panel') && !event.target.closest('.toc-button')) {
+        setShowToc(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSettings, showToc]);
+
   return (
-    <div className={`min-h-screen flex flex-col transition-colors duration-300 ${themeClasses[theme]}`}>
+    <div 
+      ref={containerRef}
+      className={`min-h-screen flex flex-col transition-colors duration-300 ${themeClasses[theme]}`}
+    >
       {/* Simple progress bar */}
-      <div className="h-1 bg-gray-200 fixed top-0 left-0 right-0 z-20">
+      <div className="h-1 bg-gray-200 fixed top-0 left-0 right-0 z-50">
         <div 
           className="h-full bg-green-500 transition-all duration-300"
           style={{ width: `${scrollProgress}%` }}
         />
       </div>
 
-      {/* Reading Settings Bar */}
-      <div className="sticky top-1 z-10 flex justify-end p-2">
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className="p-2 rounded-full hover:bg-gray-200 transition-colors"
-          aria-label="Reading settings"
-        >
-          <Settings size={20} />
-        </button>
-      </div>
+      {/* Sticky Header with Controls */}
+<div 
+  ref={headerRef}
+  className={`sticky top-0 z-40 flex items-center justify-between px-3 sm:px-4 py-2 backdrop-blur-sm ${
+    theme === 'dark' ? 'bg-gray-900/95' : 'bg-white/95'
+  } border-b ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}
+>
+  
+  {/* Left side - Navigation */}
+  <div className="flex items-center gap-1 sm:gap-2">
+    {hasPreviousLesson && (
+      <button
+        onClick={onPreviousLesson}
+        className="p-2 rounded-lg hover:bg-gray-100 transition-colors flex items-center gap-1"
+        title="Previous lesson"
+      >
+        <ChevronLeft size={18} />
+        {!isMobile && <span className="text-sm">Prev</span>}
+      </button>
+    )}
+    
+    {/* Table of Contents Toggle */}
+    {toc.length > 0 && (
+      <button
+        onClick={() => setShowToc(!showToc)}
+        className={`toc-button p-2 rounded-lg transition-colors flex items-center gap-1 ${
+          showToc ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+        }`}
+        title="Table of contents"
+      >
+        <List size={18} />
+        {!isMobile && <span className="text-sm">Contents</span>}
+      </button>
+    )}
+  </div>
 
-      {/* Reading Settings Panel */}
+  {/* Center - Lesson title (desktop only) */}
+  {!isMobile && (
+    <span className="text-sm font-medium truncate max-w-md px-4">
+      {lesson.title}
+    </span>
+  )}
+
+  {/* Right side - Controls */}
+  <div className="flex items-center gap-1 sm:gap-2">
+    {/* Next Lesson Button - Now always visible when available */}
+    {hasNextLesson && (
+      <button
+        onClick={nextButton.handler}
+        className="p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors flex items-center gap-1"
+        title="Next lesson"
+      >
+        {!isMobile && <span className="text-sm">Next</span>}
+        <ChevronRight size={18} />
+      </button>
+    )}
+
+    {/* Reading Settings */}
+    <button
+      onClick={() => setShowSettings(!showSettings)}
+      className={`settings-button p-2 rounded-lg transition-colors ${
+        showSettings ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+      }`}
+      title="Reading settings"
+    >
+      <Settings size={18} />
+    </button>
+
+    {/* Fullscreen Toggle */}
+    <button
+      onClick={toggleFullscreen}
+      className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+      title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+    >
+      {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+    </button>
+  </div>
+</div>
+
+      {/* Table of Contents Panel - Fixed width */}
+      {showToc && toc.length > 0 && (
+        <div className={`toc-panel fixed left-2 sm:left-4 top-14 z-30 w-64 rounded-lg shadow-xl border ${
+          theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+        } p-3 max-h-96 overflow-y-auto`}>
+          <div className="flex items-center justify-between mb-2 sticky top-0 bg-inherit pt-1">
+            <h4 className="font-semibold text-sm">Contents</h4>
+            <button 
+              onClick={() => setShowToc(false)} 
+              className="p-1 hover:bg-gray-100 rounded"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="space-y-1">
+            {toc.map((item, index) => (
+              <button
+                key={index}
+                onClick={() => scrollToHeading(item.id)}
+                className={`block w-full text-left text-sm p-2 rounded hover:bg-gray-100 transition-colors ${
+                  item.level === 1 ? 'font-bold' : 
+                  item.level === 2 ? 'font-medium pl-4' : 'pl-8'
+                }`}
+              >
+                {item.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Reading Settings Panel - Fixed width */}
       {showSettings && (
-        <div className={`mx-4 mb-4 p-4 rounded-lg shadow-lg ${theme === 'dark' ? 'bg-gray-800' : 'bg-white'} border`}>
-          <div className="flex justify-between items-center mb-3">
+        <div className={`settings-panel fixed right-2 sm:right-4 top-14 z-30 w-72 sm:w-80 rounded-lg shadow-xl border ${
+          theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+        } p-4 max-h-[calc(100vh-100px)] overflow-y-auto`}>
+          <div className="flex justify-between items-center mb-4 sticky top-0 bg-inherit pt-1">
             <h3 className="font-semibold">Reading Settings</h3>
-            <button onClick={() => setShowSettings(false)} className="p-1">
+            <button onClick={() => setShowSettings(false)} className="p-1 hover:bg-gray-100 rounded">
               <X size={16} />
             </button>
           </div>
           
-          <div className="space-y-4">
+          <div className="space-y-6">
             {/* Font Size Controls */}
             <div>
-              <label className="text-sm font-medium block mb-2">Text Size</label>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setFontSize('small')}
-                  className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                    fontSize === 'small' ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200'
-                  }`}
-                >
-                  A-
-                </button>
-                <button
-                  onClick={() => setFontSize('medium')}
-                  className={`flex-1 px-3 py-2 text-base rounded transition-colors ${
-                    fontSize === 'medium' ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200'
-                  }`}
-                >
-                  A
-                </button>
-                <button
-                  onClick={() => setFontSize('large')}
-                  className={`flex-1 px-3 py-2 text-lg rounded transition-colors ${
-                    fontSize === 'large' ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200'
-                  }`}
-                >
-                  A+
-                </button>
+              <label className="text-sm font-medium block mb-3">Text Size</label>
+              <div className="grid grid-cols-3 gap-2">
+                {['small', 'medium', 'large'].map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => setFontSize(size)}
+                    className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                      fontSize === size 
+                        ? 'bg-blue-600 text-white' 
+                        : theme === 'dark' 
+                          ? 'bg-gray-700 hover:bg-gray-600' 
+                          : 'bg-gray-100 hover:bg-gray-200'
+                    }`}
+                  >
+                    {size === 'small' ? 'A-' : size === 'medium' ? 'A' : 'A+'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Font Family */}
+            <div>
+              <label className="text-sm font-medium block mb-3">Font Family</label>
+              <div className="grid grid-cols-1 gap-2">
+                {[
+                  { key: 'default', label: 'Sans-serif', class: '' },
+                  { key: 'serif', label: 'Serif', class: 'font-serif' },
+                  { key: 'dyslexic', label: 'Open Dyslexic', class: 'font-dyslexic' }
+                ].map((font) => (
+                  <button
+                    key={font.key}
+                    onClick={() => setFontFamily(font.key)}
+                    className={`px-3 py-2 text-sm rounded-lg transition-colors ${font.class} ${
+                      fontFamily === font.key 
+                        ? 'bg-blue-600 text-white' 
+                        : theme === 'dark' 
+                          ? 'bg-gray-700 hover:bg-gray-600' 
+                          : 'bg-gray-100 hover:bg-gray-200'
+                    }`}
+                  >
+                    {font.label}
+                  </button>
+                ))}
               </div>
             </div>
 
             {/* Theme/Color Mode */}
             <div>
-              <label className="text-sm font-medium block mb-2">Color Theme</label>
+              <label className="text-sm font-medium block mb-3">Color Theme</label>
               <div className="grid grid-cols-3 gap-2">
-                <button
-                  onClick={() => setTheme('light')}
-                  className={`px-3 py-2 text-sm rounded transition-colors ${
-                    theme === 'light' ? 'ring-2 ring-blue-600' : ''
-                  }`}
-                >
-                  Light
-                </button>
-                <button
-                  onClick={() => setTheme('sepia')}
-                  className={`px-3 py-2 text-sm rounded transition-colors ${
-                    theme === 'sepia' ? 'ring-2 ring-blue-600' : ''
-                  }`}
-                >
-                  Sepia
-                </button>
-                <button
-                  onClick={() => setTheme('dark')}
-                  className={`px-3 py-2 text-sm rounded transition-colors ${
-                    theme === 'dark' ? 'ring-2 ring-blue-600' : ''
-                  }`}
-                >
-                  Dark
-                </button>
+                {['light', 'sepia', 'dark'].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTheme(t)}
+                    className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                      theme === t 
+                        ? 'ring-2 ring-blue-600 ring-offset-2' 
+                        : theme === 'dark' 
+                          ? 'bg-gray-700 hover:bg-gray-600' 
+                          : 'bg-gray-100 hover:bg-gray-200'
+                    } ${t === 'light' ? 'bg-white text-gray-900 border' : 
+                       t === 'sepia' ? 'bg-amber-50 text-gray-900 border' : 
+                       'bg-gray-900 text-white border-gray-700'}`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Reading Progress */}
+            <div className="border-t pt-4">
+              <div className="flex justify-between text-sm mb-2">
+                <span>Reading progress</span>
+                <span className="font-medium">{scrollProgress}%</span>
+              </div>
+              <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-green-500 transition-all duration-300"
+                  style={{ width: `${scrollProgress}%` }}
+                />
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 pt-2 px-4 md:px-8">
-        <div className="max-w-3xl mx-auto">
-          <h1 className={`text-2xl md:text-3xl font-bold mb-4 ${fontFamilyClasses[fontFamily]}`}>
-            {lesson.title}
-          </h1>
+      {/* Main Content Area */}
+      <div className="flex-1 px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 overflow-hidden">
+        <div className="max-w-3xl mx-auto h-full flex flex-col">
+          {/* Lesson Header */}
+          <div className="mb-4 sm:mb-6 flex-shrink-0">
+            <h1 className={`text-xl sm:text-2xl lg:text-3xl font-bold mb-2 sm:mb-3 break-words ${fontFamilyClasses[fontFamily]}`}>
+              {lesson.title}
+            </h1>
+            
+            {/* Lesson metadata */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1 text-xs bg-green-50 text-green-600 px-2 py-1 rounded-full whitespace-nowrap">
+                <BookOpen size={12} />
+                <span>Reading</span>
+              </span>
+              
+              <span className="inline-flex items-center gap-1 text-xs bg-purple-50 text-purple-600 px-2 py-1 rounded-full whitespace-nowrap">
+                <Clock size={12} />
+                <span>{getDisplayDuration()}</span>
+              </span>
+
+              {/* Completed badge */}
+              {enrollment?.completedLessons?.includes(lessonId) && (
+                <span className="inline-flex items-center gap-1 text-xs bg-green-50 text-green-600 px-2 py-1 rounded-full whitespace-nowrap">
+                  <CheckCircle size={12} />
+                  <span>Completed</span>
+                </span>
+              )}
+            </div>
+
+            {/* Lesson description */}
+            {lesson.description && !isMobile && (
+              <p className="mt-3 text-sm text-gray-600 leading-relaxed border-l-4 border-blue-500 pl-3 break-words">
+                {lesson.description}
+              </p>
+            )}
+          </div>
+
           
+
+          {/* Scrollable Content */}
           <div 
             ref={contentRef}
             onScroll={handleScroll}
-            className={`overflow-y-auto prose max-w-none ${fontSizeClasses[fontSize]} ${fontFamilyClasses[fontFamily]}`}
-            style={{ height: 'calc(100vh - 280px)' }}
+            className={`overflow-y-auto pr-1 sm:pr-2 break-words whitespace-pre-wrap ${fontSizeClasses[fontSize]} ${lineHeightClasses[fontSize]} ${fontFamilyClasses[fontFamily]}`}
+            style={{ height: getContentHeight() }}
           >
             {lesson.markdown ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {lesson.markdown}
-              </ReactMarkdown>
+              <div className="markdown-content prose prose-sm sm:prose-base lg:prose-lg max-w-none">
+                <ReactMarkdown 
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    h1: ({node, children, ...props}) => {
+                      const id = children[0]?.toLowerCase().replace(/[^\w]+/g, '-') || '';
+                      return <h1 id={id} className="text-2xl sm:text-3xl lg:text-4xl font-bold mt-6 sm:mt-8 mb-4 scroll-mt-20 break-words" {...props}>{children}</h1>;
+                    },
+                    h2: ({node, children, ...props}) => {
+                      const id = children[0]?.toLowerCase().replace(/[^\w]+/g, '-') || '';
+                      return <h2 id={id} className="text-xl sm:text-2xl lg:text-3xl font-bold mt-5 sm:mt-6 mb-3 scroll-mt-20 break-words" {...props}>{children}</h2>;
+                    },
+                    h3: ({node, children, ...props}) => {
+                      const id = children[0]?.toLowerCase().replace(/[^\w]+/g, '-') || '';
+                      return <h3 id={id} className="text-lg sm:text-xl lg:text-2xl font-bold mt-4 mb-2 scroll-mt-20 break-words" {...props}>{children}</h3>;
+                    },
+                    p: ({node, ...props}) => <p className="mb-4 leading-relaxed break-words" {...props} />,
+                    ul: ({node, ...props}) => <ul className="list-disc pl-5 sm:pl-6 mb-4 space-y-1 break-words" {...props} />,
+                    ol: ({node, ...props}) => <ol className="list-decimal pl-5 sm:pl-6 mb-4 space-y-1 break-words" {...props} />,
+                    li: ({node, ...props}) => <li className="mb-1 break-words" {...props} />,
+                    blockquote: ({node, ...props}) => (
+                      <blockquote className="border-l-4 border-blue-500 bg-blue-50 pl-4 pr-3 py-3 italic my-4 text-gray-700 rounded-r-lg break-words" {...props} />
+                    ),
+                    code: ({node, inline, ...props}) => 
+                      inline ? (
+                        <code className="bg-gray-100 rounded px-1.5 py-0.5 text-sm font-mono break-words" {...props} />
+                      ) : (
+                        <code className="block bg-gray-900 text-gray-100 rounded-lg p-3 sm:p-4 font-mono text-sm overflow-x-auto my-4 whitespace-pre" {...props} />
+                      ),
+                    pre: ({node, ...props}) => <pre className="bg-gray-900 rounded-lg p-3 sm:p-4 overflow-x-auto my-4 whitespace-pre" {...props} />,
+                    a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline decoration-2 underline-offset-2 transition-colors break-words" target="_blank" rel="noopener noreferrer" {...props} />,
+                    table: ({node, ...props}) => (
+                      <div className="overflow-x-auto my-4">
+                        <table className="min-w-full border-collapse border border-gray-300" {...props} />
+                      </div>
+                    ),
+                    th: ({node, ...props}) => <th className="border border-gray-300 bg-gray-100 px-4 py-2 text-left font-bold break-words" {...props} />,
+                    td: ({node, ...props}) => <td className="border border-gray-300 px-4 py-2 break-words" {...props} />,
+                    hr: ({node, ...props}) => <hr className="my-8 border-t border-gray-200" {...props} />,
+                    img: ({node, ...props}) => <img className="max-w-full h-auto rounded-lg shadow-md my-4 mx-auto" {...props} />,
+                  }}
+                >
+                  {lesson.markdown}
+                </ReactMarkdown>
+              </div>
             ) : (
-              <p className="text-gray-400 italic">No content available</p>
+              <div className="flex flex-col items-center justify-center py-12">
+                <BookOpen className="h-12 w-12 text-gray-300 mb-3" />
+                <p className="text-gray-400 italic">No content available</p>
+              </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Footer with navigation buttons */}
-      <div className={`border-t px-6 py-4 flex items-center justify-between ${
-        theme === 'dark' ? 'border-gray-700' : ''
-      }`}>
-        <div className="flex items-center gap-4">
-          <span className="text-sm opacity-60">
-            {readingTime} min read • {scrollProgress}%
-          </span>
-          {enrollment?.completedLessons?.includes(lessonId) && (
-            <span className="text-sm text-green-600 flex items-center gap-1">
-              <CheckCircle size={16} />
-              Completed
+      {/* Footer with navigation - Hidden in fullscreen */}
+      {!isFullscreen && (
+        <div 
+          ref={footerRef}
+          className={`border-t px-3 sm:px-6 py-3 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0 ${
+            theme === 'dark' ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-white'
+          }`}
+        >
+          {/* Progress - Only on desktop */}
+          <div className="hidden sm:flex items-center gap-3">
+            <span className="text-sm opacity-60">
+              Progress: {scrollProgress}%
             </span>
+          </div>
+
+          {/* Mobile progress indicator */}
+          {isMobile && (
+            <div className="w-full flex justify-center">
+              <div className="flex items-center gap-2">
+                <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-green-500 transition-all"
+                    style={{ width: `${scrollProgress}%` }}
+                  />
+                </div>
+                <span className="text-xs opacity-60">{scrollProgress}%</span>
+              </div>
+            </div>
           )}
+
+          {/* Navigation buttons */}
+          <div className="flex gap-2 w-full sm:w-auto justify-center">
+            <button
+              onClick={onPreviousLesson}
+              disabled={!hasPreviousLesson}
+              className="flex-1 sm:flex-none px-4 py-2 text-sm border rounded-lg disabled:opacity-50 hover:bg-gray-50 transition-colors flex items-center justify-center gap-1 min-w-[70px] sm:min-w-[80px]"
+            >
+              <ChevronLeft size={16} />
+              <span>Prev</span>
+            </button>
+
+            {!enrollment?.completedLessons?.includes(lessonId) && (
+              <button
+                onClick={onMarkComplete}
+                className="flex-1 sm:flex-none px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-1 min-w-[90px] sm:min-w-[100px]"
+              >
+                <CheckCircle size={16} />
+                <span>Complete</span>
+              </button>
+            )}
+
+            <button
+              onClick={nextButton.handler}
+              disabled={!hasNextLesson && !hasQuiz}
+              className={`flex-1 sm:flex-none px-4 py-2 text-sm rounded-lg transition-colors flex items-center justify-center gap-1 min-w-[70px] sm:min-w-[80px] ${
+                !hasNextLesson && hasQuiz 
+                  ? 'bg-green-600 text-white hover:bg-green-700' 
+                  : hasNextLesson
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'bg-gray-300 text-gray-600 cursor-not-allowed'
+              }`}
+            >
+              <span>{isMobile ? 'Next' : nextButton.text}</span>
+              {hasNextLesson && <ChevronRight size={16} />}
+            </button>
+          </div>
         </div>
-        <div className="flex gap-3">
-          <button
-            onClick={onPreviousLesson}
-            disabled={!hasPreviousLesson}
-            className="px-4 py-2 text-sm border rounded-lg disabled:opacity-50 hover:bg-gray-50 transition-colors"
-          >
-            ← Previous
-          </button>
-          <button
-            onClick={nextButton.handler}
-            disabled={!hasNextLesson && !hasQuiz}
-            className={`px-6 py-2 text-sm rounded-lg transition-colors ${
-              !hasNextLesson && hasQuiz 
-                ? 'bg-green-600 text-white hover:bg-green-700' 
-                : hasNextLesson
-                ? 'bg-blue-600 text-white hover:bg-blue-700'
-                : 'bg-gray-300 text-gray-600 cursor-not-allowed'
-            }`}
-          >
-            {nextButton.text}
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -1322,211 +1674,177 @@ export default function CoursePage() {
         </div>
       </header>
 
-      {/* Main Content - 2/3 - 1/3 Layout */}
-      <div className="w-full px-4 lg:px-6 py-4">
-        <div className="flex flex-col lg:flex-row gap-6">
-          {/* Main Column - 2/3 width */}
-          <div className={`${layout.mainColumn} transition-all duration-300 ${layout.isReadingMode ? 'mx-auto' : ''}`}>
-            {/* Lesson Content */}
-            {activeLesson ? (
-              activeLesson.videoUrl ? (
-                <VideoPlayerLayout
-                  activeLesson={activeLesson}
-                  lessons={activeLessons}
-                  currentLessonIndex={currentLessonIndex}
-                  hasNextLesson={hasNextLesson}
-                  hasPreviousLesson={hasPreviousLesson}
-                  setActiveLesson={setActiveLesson}
-                  enrollment={enrollment}
-                  isAutoCompleting={isAutoCompleting}
-                  autoCompleteLesson={autoCompleteLesson}
-                  markCompleteAndGoNext={markCompleteAndGoNext}
-                  questions={questions}
-                  handleQuestionAnswered={handleQuestionAnswered}
-                  handleLessonProgress={handleLessonProgress}
-                  onTakeQuiz={() => navigate(`/course/${courseId}/quiz`)}
-                  hasQuiz={hasQuiz}
-                />
-              ) : (
-                <MarkdownLesson 
-                  lesson={activeLesson}
-                  lessonId={activeLesson.id}
-                  onMarkComplete={autoCompleteLesson}
-                  enrollment={enrollment}
-                  hasNextLesson={hasNextLesson}
-                  hasPreviousLesson={hasPreviousLesson}
-                  onNextLesson={() => {
-                    if (hasNextLesson && !isAutoCompleting) {
-                      setActiveLesson(activeLessons[currentLessonIndex + 1]);
-                    }
-                  }}
-                  onPreviousLesson={() => {
-                    if (hasPreviousLesson && !isAutoCompleting) {
-                      setActiveLesson(activeLessons[currentLessonIndex - 1]);
-                    }
-                  }}
-                  onTakeQuiz={() => navigate(`/course/${courseId}/quiz`)}
-                  hasQuiz={hasQuiz}
-                />
-              )
-            ) : (
-              <div className="bg-white rounded-xl shadow border p-8 text-center">
-                <BookOpen className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                  Select a lesson to begin
-                </h3>
-                <p className="text-gray-600">
-                  Choose a lesson from the sidebar to start learning
-                </p>
-              </div>
-            )}
+{/* Main Content - 2/3 - 1/3 Layout */}
+<div className="w-full px-4 lg:px-6 py-4">
+  <div className="flex flex-col lg:flex-row gap-6">
+    {/* Main Column - 2/3 width */}
+    <div className={`${layout.mainColumn} transition-all duration-300 ${layout.isReadingMode ? 'mx-auto' : ''}`}>
+      {/* Lesson Content */}
+      {activeLesson ? (
+        activeLesson.videoUrl ? (
+          <VideoPlayerLayout
+            activeLesson={activeLesson}
+            lessons={activeLessons}
+            currentLessonIndex={currentLessonIndex}
+            hasNextLesson={hasNextLesson}
+            hasPreviousLesson={hasPreviousLesson}
+            setActiveLesson={setActiveLesson}
+            enrollment={enrollment}
+            isAutoCompleting={isAutoCompleting}
+            autoCompleteLesson={autoCompleteLesson}
+            markCompleteAndGoNext={markCompleteAndGoNext}
+            questions={questions}
+            handleQuestionAnswered={handleQuestionAnswered}
+            handleLessonProgress={handleLessonProgress}
+            onTakeQuiz={() => navigate(`/course/${courseId}/quiz`)}
+            hasQuiz={hasQuiz}
+          />
+        ) : (
+          <MarkdownLesson 
+            lesson={activeLesson}
+            lessonId={activeLesson.id}
+            onMarkComplete={autoCompleteLesson}
+            enrollment={enrollment}
+            hasNextLesson={hasNextLesson}
+            hasPreviousLesson={hasPreviousLesson}
+            onNextLesson={() => {
+              if (hasNextLesson && !isAutoCompleting) {
+                setActiveLesson(activeLessons[currentLessonIndex + 1]);
+              }
+            }}
+            onPreviousLesson={() => {
+              if (hasPreviousLesson && !isAutoCompleting) {
+                setActiveLesson(activeLessons[currentLessonIndex - 1]);
+              }
+            }}
+            onTakeQuiz={() => navigate(`/course/${courseId}/quiz`)}
+            hasQuiz={hasQuiz}
+          />
+        )
+      ) : (
+        <div className="bg-white rounded-xl shadow border p-8 text-center">
+          <BookOpen className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            Select a lesson to begin
+          </h3>
+          <p className="text-gray-600">
+            Choose a lesson from the sidebar to start learning
+          </p>
+        </div>
+      )}
 
-            {/* Mobile Resources Section */}
-            {allResources.length > 0 && (
-              <div className="lg:hidden mt-6">
-                <div className="bg-white rounded-xl shadow border overflow-hidden">
-                  <button
-                    onClick={() => setExpandedResources(prev => ({
-                      ...prev,
-                      allResources: !prev.allResources
-                    }))}
-                    className="w-full p-4 flex items-center justify-between text-left hover:bg-gray-50"
-                  >
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Course Resources</h3>
-                      <p className="text-sm text-gray-500">{allResources.length} files</p>
-                    </div>
-                    {expandedResources.allResources ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
-                  </button>
-                  
-                  {expandedResources.allResources && (
-                    <div className="p-4 border-t space-y-2 max-h-80 overflow-y-auto">
-                      {allResources.map((resource, index) => (
-                        <ResourceCard
-                          key={index}
-                          resource={resource}
-                          lessonTitle={resource.lessonTitle}
-                          onDownload={handleDownloadResource}
-                          onPreview={handlePreviewResource}
-                          downloading={downloading}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+      {/* REMOVED: Mobile Resources Section - Now handled by CourseHome */}
 
-            {/* Quiz Section */}
-            {hasQuiz && !layout.isReadingMode && (
-              <div className="mt-6 bg-white rounded-xl shadow border p-6">
-                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">Course Quiz</h3>
-                    <p className="text-sm text-gray-500">
-                      Test your knowledge with the final quiz
-                    </p>
+      {/* Quiz Section */}
+      {hasQuiz && !layout.isReadingMode && (
+        <div className="mt-6 bg-white rounded-xl shadow border p-6">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Course Quiz</h3>
+              <p className="text-sm text-gray-500">
+                Test your knowledge with the final quiz
+              </p>
+            </div>
+            {enrollment?.quizCompleted ? (
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <div className="text-lg font-semibold text-gray-900">
+                    Score: {enrollment.quizScore}%
                   </div>
-                  {enrollment?.quizCompleted ? (
-                    <div className="flex items-center gap-4">
-                      <div className="text-right">
-                        <div className="text-lg font-semibold text-gray-900">
-                          Score: {enrollment.quizScore}%
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {enrollment.quizScore >= 70 ? "Passed" : "Failed"}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => navigate(`/course/${courseId}/quiz`)}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                      >
-                        Retake Quiz
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => navigate(`/course/${courseId}/quiz`)}
-                      className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                    >
-                      Take Quiz
-                    </button>
-                  )}
+                  <div className="text-sm text-gray-500">
+                    {enrollment.quizScore >= 70 ? "Passed" : "Failed"}
+                  </div>
                 </div>
+                <button
+                  onClick={() => navigate(`/course/${courseId}/quiz`)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  Retake Quiz
+                </button>
               </div>
+            ) : (
+              <button
+                onClick={() => navigate(`/course/${courseId}/quiz`)}
+                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+              >
+                Take Quiz
+              </button>
             )}
           </div>
+        </div>
+      )}
+    </div>
 
-          {/* Sidebar - 1/3 width */}
-          {layout.showSidebar && (
-            <div className={`${layout.sidebarColumn} transition-all duration-300 ${
-              showMobileLessons 
-                ? 'fixed inset-0 z-30 bg-white overflow-y-auto' 
-                : 'hidden lg:block'
-            }`}>
-              {/* Mobile Lessons Header */}
-              {showMobileLessons && (
-                <div className="sticky top-0 bg-white z-10 flex items-center justify-between p-4 border-b">
-                  <h2 className="text-lg font-bold text-gray-900">Course Lessons</h2>
-                  <button
-                    onClick={() => setShowMobileLessons(false)}
-                    className="p-2 hover:bg-gray-100 rounded-lg"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              )}
+    {/* Sidebar - 1/3 width */}
+    {layout.showSidebar && (
+      <div className={`${layout.sidebarColumn} transition-all duration-300 ${
+        showMobileLessons 
+          ? 'fixed inset-0 z-30 bg-white overflow-y-auto' 
+          : 'hidden lg:block'
+      }`}>
+        {/* Mobile Lessons Header */}
+        {showMobileLessons && (
+          <div className="sticky top-0 bg-white z-10 flex items-center justify-between p-4 border-b">
+            <h2 className="text-lg font-bold text-gray-900">Course Lessons</h2>
+            <button
+              onClick={() => setShowMobileLessons(false)}
+              className="p-2 hover:bg-gray-100 rounded-lg"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        )}
 
-              <div className="bg-white rounded-xl shadow border h-full">
-                <div className="p-4 border-b">
-                  <h3 className="font-semibold text-gray-900">Course Lessons</h3>
-                  <p className="text-sm text-gray-500">
-                    {enrollment?.completedLessons?.filter(id => 
-                      activeLessons.some(l => l.id === id)
-                    ).length || 0} of {activeLessons.length} completed
+        <div className="bg-white rounded-xl shadow border h-full">
+          <div className="p-4 border-b">
+            <h3 className="font-semibold text-gray-900">Course Lessons</h3>
+            <p className="text-sm text-gray-500">
+              {enrollment?.completedLessons?.filter(id => 
+                activeLessons.some(l => l.id === id)
+              ).length || 0} of {activeLessons.length} completed
+            </p>
+            {archivedLessons.length > 0 && (
+              <p className="text-xs text-gray-400 mt-1">
+                {archivedLessons.length} archived {archivedLessons.length === 1 ? 'lesson' : 'lessons'}
+              </p>
+            )}
+          </div>
+          
+          <div className="overflow-y-auto max-h-[calc(100vh-300px)]">
+            {renderLessonList()}
+          </div>
+
+          {/* Desktop Resources Section */}
+          {allResources.length > 0 && (
+            <div className="border-t p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-900">Resources</h3>
+                <span className="text-xs text-gray-500">{allResources.length} files</span>
+              </div>
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {allResources.slice(0, 5).map((resource, index) => (
+                  <ResourceCard
+                    key={index}
+                    resource={resource}
+                    lessonTitle={resource.lessonTitle}
+                    onDownload={handleDownloadResource}
+                    onPreview={handlePreviewResource}
+                    downloading={downloading}
+                  />
+                ))}
+                {allResources.length > 5 && (
+                  <p className="text-xs text-gray-500 text-center pt-2">
+                    +{allResources.length - 5} more resources
                   </p>
-                  {archivedLessons.length > 0 && (
-                    <p className="text-xs text-gray-400 mt-1">
-                      {archivedLessons.length} archived {archivedLessons.length === 1 ? 'lesson' : 'lessons'}
-                    </p>
-                  )}
-                </div>
-                
-                <div className="overflow-y-auto max-h-[calc(100vh-300px)]">
-                  {renderLessonList()}
-                </div>
-
-                {/* Desktop Resources Section */}
-                {allResources.length > 0 && (
-                  <div className="border-t p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="font-semibold text-gray-900">Resources</h3>
-                      <span className="text-xs text-gray-500">{allResources.length} files</span>
-                    </div>
-                    <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                      {allResources.slice(0, 5).map((resource, index) => (
-                        <ResourceCard
-                          key={index}
-                          resource={resource}
-                          lessonTitle={resource.lessonTitle}
-                          onDownload={handleDownloadResource}
-                          onPreview={handlePreviewResource}
-                          downloading={downloading}
-                        />
-                      ))}
-                      {allResources.length > 5 && (
-                        <p className="text-xs text-gray-500 text-center pt-2">
-                          +{allResources.length - 5} more resources
-                        </p>
-                      )}
-                    </div>
-                  </div>
                 )}
               </div>
             </div>
           )}
         </div>
       </div>
+    )}
+  </div>
+ </div>
     </div>
   );
 }
