@@ -11,5 +11,8 @@
   "license": "ISC",
   "dependencies": {
     "resend": "^6.9.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.149.0"
   }
 }

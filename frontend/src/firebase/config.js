@@ -1,10 +1,9 @@
-// src/firebase/config.js - FIXED VERSION
+// src/infrastructure/firebase/config.js
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getAuth, confirmPasswordReset } from "firebase/auth";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getFunctions } from "firebase/functions";
-import { confirmPasswordReset } from "firebase/auth";
 
 // Firebase configuration from environment variables
 const firebaseConfig = {
@@ -16,31 +15,29 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-// console.log("🔧 Firebase Config Check:");
-// console.log("Project ID:", firebaseConfig.projectId);
-// console.log("API Key exists:", !!firebaseConfig.apiKey);
-// console.log("API Key starts with AIza:", firebaseConfig.apiKey?.startsWith('AIza'));
-
 // Validate API key format
 if (!firebaseConfig.apiKey || !firebaseConfig.apiKey.startsWith('AIza')) {
   console.error("❌ ERROR: Invalid API key format!");
   console.error("Expected: AIzaSy... (starts with AIza)");
   console.error("Got:", firebaseConfig.apiKey);
   console.error("Please check your .env file");
-  
-  // Show helpful message
   alert("Firebase configuration error! Please check the console for details.");
 }
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
-// Export services (skip analytics for now)
+// Export services with advanced React 19/Firebase v11 multi-tab persistence
 export const auth = getAuth(app);
-export const db = getFirestore(app);
 export const storage = getStorage(app);
-export const functions = getFunctions(app, "africa-south1");
+export const functions = getFunctions(app, "africa-south1"); // Preserves your regional backend
 export { confirmPasswordReset };
-export default app;
 
-console.log("✅ Firebase initialized successfully!");
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
+
+console.log("✅ Firebase infrastructure layer initialized successfully!");
+export default app;

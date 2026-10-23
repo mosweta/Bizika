@@ -1,73 +1,80 @@
-import { Link, useNavigate } from "react-router-dom";
-import { useEffect, useState } from 'react';
-
-import {Globe, Shield, Users } from 'lucide-react';
+// src/pages/home/footer.jsx
+import { Link } from "react-router-dom";
+import { BookOpen } from "lucide-react";
 
 export default function Footer() {
-      const handleLogin = () => {
-    navigate("/login");
-  };
-    const navigate = useNavigate();
-
-
-return (
-    <footer className="bg-gray-900 text-gray-300 py-12">
-        <div className="container mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-            <div>
-              {/* Logo - Simple replacement */}
-
-  
-    
-   
-              <div className="flex items-center mb-6">
-                <div className="h-10 w-10 bg-gray-200 rounded-xl flex items-center justify-center">
-                  <img 
-                    src="/logo4.png" 
-                    alt="Pavoc LMS Logo" 
-                    className="h-12 w-10 rounded-xl object-cover"
-                    />
-                </div>
-                <span className="text-xl font-bold text-white ml-3">Pavoc LMS</span>
-              </div>
-              <p className="text-gray-400">
-                Empowering professionals with practical and relevant education for real-world success across domains.
-              </p>
+  return (
+    <footer className="border-t border-slate-200 bg-white">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-12">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+          <div className="md:col-span-1">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-800">
+                <BookOpen className="h-4 w-4 text-white" />
+              </span>
+              <span className="text-base font-semibold tracking-tight">Bizika LMS</span>
             </div>
-            
-            
-            
-            <div>
-              <h4 className="text-white font-semibold mb-4">Resources</h4>
-              <ul className="space-y-3">
-                
-                <li><Link to="/privacy" className="hover:text-white transition-colors">Privacy Policy</Link></li>
-                <li><Link to="/terms" className="hover:text-white transition-colors">Terms and Conditions</Link></li>
-              </ul>
-            </div>
-            
-            <div>
-              <h4 className="text-white font-semibold mb-4">Connect</h4>
-              <ul className="space-y-3">
-                <li className="flex items-center gap-2">
-                  <Globe className="h-4 w-4" />
-                  <span>Global Community</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Shield className="h-4 w-4" />
-                  <span>Secure Platform</span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  <span>10+ Students</span>
-                </li>
-              </ul>
-            </div>
+            <p className="mt-4 text-sm text-slate-500 leading-relaxed">
+              A focused learning platform for professionals.
+            </p>
           </div>
-          
-          <div className="border-t border-gray-800 mt-8 pt-8 text-center text-gray-500">
-            <p>© {new Date().getFullYear()} Pavoc LMS. All rights reserved.</p>
+
+          <div>
+            <h4 className="text-sm font-semibold text-slate-900">Platform</h4>
+            <ul className="mt-4 space-y-2 text-sm">
+              <li>
+                <Link to="/courses" className="text-slate-500 hover:text-slate-900">
+                  Courses
+                </Link>
+              </li>
+              <li>
+                <Link to="/contact" className="text-slate-500 hover:text-slate-900">
+                  Contact
+                </Link>
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h4 className="text-sm font-semibold text-slate-900">Legal</h4>
+            <ul className="mt-4 space-y-2 text-sm">
+              <li>
+                <Link to="/privacy" className="text-slate-500 hover:text-slate-900">
+                  Privacy
+                </Link>
+              </li>
+              <li>
+                <Link to="/terms" className="text-slate-500 hover:text-slate-900">
+                  Terms
+                </Link>
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h4 className="text-sm font-semibold text-slate-900">Account</h4>
+            <ul className="mt-4 space-y-2 text-sm">
+              <li>
+                <Link to="/login" className="text-slate-500 hover:text-slate-900">
+                  Sign in
+                </Link>
+              </li>
+              <li>
+                <Link to="/signup" className="text-slate-500 hover:text-slate-900">
+                  Create account
+                </Link>
+              </li>
+            </ul>
           </div>
         </div>
-      </footer>
-)}
+
+        <div className="mt-12 border-t border-slate-200 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <p className="text-xs text-slate-500">
+            © {new Date().getFullYear()} Bizika LMS. All rights reserved.
+          </p>
+          <p className="text-xs text-slate-500">Built for focused learning.</p>
+        </div>
+      </div>
+    </footer>
+  );
+}

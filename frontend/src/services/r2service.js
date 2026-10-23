@@ -1,4 +1,4 @@
-// src/services/r2service.js - Updated version
+// src/services/r2service.js - PRODUCTION SAFE VERSION
 class R2Service {
   constructor() {
     // Remove trailing /r2 if present
@@ -7,14 +7,16 @@ class R2Service {
     this.workerEndpoint = workerUrl;
     this.apiKey = import.meta.env.VITE_R2_API_KEY;
     
-    console.log('📦 R2Service initialized with endpoint:', this.workerEndpoint);
+    // ONLY log in development, never in production
+    if (import.meta.env.MODE === 'development') {
+      console.log('📦 R2Service initialized');
+    }
   }
 
-  // Helper method for API calls
+  // Helper method for API calls - REMOVED ALL LOGGING
   async _fetchApi(endpoint, options = {}) {
     try {
       const url = `${this.workerEndpoint}${endpoint}`;
-      console.log(`📡 API Call: ${options.method || 'GET'} ${url}`);
       
       const headers = {
         'X-Request-ID': this.generateRequestId(),
@@ -26,10 +28,9 @@ class R2Service {
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({
-          error: `HTTP ${response.status}`,
-          message: response.statusText
+          error: `HTTP ${response.status}`
         }));
-        throw new Error(errorData.error || errorData.message || 'API request failed');
+        throw new Error(errorData.error || 'API request failed');
       }
       
       const result = await response.json();
@@ -41,84 +42,84 @@ class R2Service {
       return result.data;
       
     } catch (error) {
-      console.error(`❌ API Error (${endpoint}):`, error);
+      // Only log errors, and only in development
+      if (import.meta.env.MODE === 'development') {
+        console.error('API Error:', error.message);
+      }
       throw error;
     }
   }
 
-// Enhanced R2Service with progress tracking
-// Add to your R2Service class in r2service.js:
-
-async uploadFile(file, metadata = {}, onProgress) {
-  try {
-    console.log(`📤 Uploading: ${file.name} (${this.formatBytes(file.size)})`);
-    
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    // Add metadata
-    if (metadata) {
-      Object.entries(metadata).forEach(([key, value]) => {
-        if (key !== 'file') {
-          formData.append(key, typeof value === 'object' ? JSON.stringify(value) : value);
-        }
-      });
-    }
-    
-    const xhr = new XMLHttpRequest();
-    
-    return new Promise((resolve, reject) => {
-      xhr.upload.addEventListener('progress', (event) => {
-        if (event.lengthComputable && onProgress) {
-          const percentComplete = Math.round((event.loaded / event.total) * 100);
-          onProgress(percentComplete);
-        }
-      });
+  async uploadFile(file, metadata = {}, onProgress) {
+    try {
+      // REMOVED file name logging
       
-      xhr.addEventListener('load', () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const result = JSON.parse(xhr.responseText);
-            if (result.success) {
-              resolve({ success: true, data: result.data });
-            } else {
-              reject(new Error(result.error || 'Upload failed'));
-            }
-          } catch (error) {
-            reject(new Error('Invalid response from server'));
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      if (metadata) {
+        Object.entries(metadata).forEach(([key, value]) => {
+          if (key !== 'file') {
+            formData.append(key, typeof value === 'object' ? JSON.stringify(value) : value);
           }
-        } else {
-          reject(new Error(`HTTP ${xhr.status}`));
-        }
+        });
+      }
+      
+      const xhr = new XMLHttpRequest();
+      
+      return new Promise((resolve, reject) => {
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable && onProgress) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            onProgress(percentComplete);
+          }
+        });
+        
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const result = JSON.parse(xhr.responseText);
+              if (result.success) {
+                resolve({ success: true, data: result.data });
+              } else {
+                reject(new Error('Upload failed'));
+              }
+            } catch (error) {
+              reject(new Error('Invalid response from server'));
+            }
+          } else {
+            reject(new Error(`HTTP ${xhr.status}`));
+          }
+        });
+        
+        xhr.addEventListener('error', () => {
+          reject(new Error('Network error'));
+        });
+        
+        xhr.addEventListener('abort', () => {
+          reject(new Error('Upload cancelled'));
+        });
+        
+        xhr.open('POST', `${this.workerEndpoint}/api/upload`);
+        xhr.setRequestHeader('Authorization', `Bearer ${this.apiKey}`);
+        xhr.send(formData);
       });
       
-      xhr.addEventListener('error', () => {
-        reject(new Error('Network error'));
-      });
-      
-      xhr.addEventListener('abort', () => {
-        reject(new Error('Upload cancelled'));
-      });
-      
-      xhr.open('POST', `${this.workerEndpoint}/api/upload`);
-      xhr.setRequestHeader('Authorization', `Bearer ${this.apiKey}`);
-      xhr.send(formData);
-    });
-    
-  } catch (error) {
-    console.error('❌ Upload failed:', error);
-    return { 
-      success: false, 
-      error: error.message,
-      data: null 
-    };
+    } catch (error) {
+      if (import.meta.env.MODE === 'development') {
+        console.error('Upload failed:', error.message);
+      }
+      return { 
+        success: false, 
+        error: error.message,
+        data: null 
+      };
+    }
   }
-}
 
-  // Delete file
+  // Delete file - REMOVED key logging
   async deleteFile(key) {
     try {
-      console.log(`🗑️ Deleting: ${key}`);
       const result = await this._fetchApi(`/api/delete?key=${encodeURIComponent(key)}`, {
         method: 'DELETE'
       });
@@ -130,30 +131,29 @@ async uploadFile(file, metadata = {}, onProgress) {
   }
 
   // Get file URL
-// In R2Service class - ensure getUrl returns a string URL
-async getUrl(key) {
-  try {
-    const result = await this._fetchApi(`/api/signed-url?key=${encodeURIComponent(key)}`);
-    
-    // Ensure we return a string URL
-    if (typeof result === 'string') {
-      return result;
-    } else if (result?.url) {
-      return result.url;
-    } else if (result?.signedUrl) {
-      return result.signedUrl;
-    } else {
-      // Fallback: construct URL
+  async getUrl(key) {
+    try {
+      const result = await this._fetchApi(`/api/signed-url?key=${encodeURIComponent(key)}`);
+      
+      if (typeof result === 'string') {
+        return result;
+      } else if (result?.url) {
+        return result.url;
+      } else if (result?.signedUrl) {
+        return result.signedUrl;
+      } else {
+        return `${this.workerEndpoint}/cdn/${key}`;
+      }
+    } catch (error) {
+      // Only log in development
+      if (import.meta.env.MODE === 'development') {
+        console.error('Failed to get URL:', error.message);
+      }
       return `${this.workerEndpoint}/cdn/${key}`;
     }
-  } catch (error) {
-    console.error('Failed to get URL:', error);
-    // Fallback URL
-    return `${this.workerEndpoint}/cdn/${key}`;
   }
-}
 
-  // List files
+  // List files - REMOVED error logging
   async listFiles(options = {}) {
     try {
       const params = new URLSearchParams();
@@ -164,20 +164,18 @@ async getUrl(key) {
       const result = await this._fetchApi(`/api/list?${params.toString()}`);
       return result.files;
     } catch (error) {
-      console.error('List files error:', error);
-      // Return empty array instead of throwing for better UX
+      // Return empty array silently
       return [];
     }
   }
 
-  // Get storage statistics
+  // Get storage statistics - REMOVED error logging
   async getStorageStats() {
     try {
       const files = await this.listFiles({ limit: 1000 });
       const totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0);
       const fileCount = files.length;
       
-      // Group by type
       const byType = files.reduce((acc, file) => {
         const type = file.metadata?.type || 
                     file.metadata?.contentType?.split('/')[0] || 
@@ -194,7 +192,6 @@ async getUrl(key) {
         files
       };
     } catch (error) {
-      console.error('Failed to get storage stats:', error);
       return {
         totalSize: 0,
         fileCount: 0,
@@ -229,12 +226,10 @@ async getUrl(key) {
       const urlObj = new URL(url);
       const path = urlObj.pathname;
       
-      // Handle different URL patterns
       if (path.startsWith('/cdn/')) {
-        return path.substring(5); // Remove '/cdn/'
+        return path.substring(5);
       }
       
-      // Remove leading slash
       return path.startsWith('/') ? path.substring(1) : path;
     } catch {
       return null;
@@ -257,7 +252,7 @@ async getUrl(key) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   }
 
-  // Test connection
+  // Test connection - REMOVED logging
   async testConnection() {
     try {
       const response = await fetch(`${this.workerEndpoint}/health`);
@@ -267,7 +262,7 @@ async getUrl(key) {
         status: data.status || 'unknown' 
       };
     } catch (error) {
-      return { connected: false, error: error.message };
+      return { connected: false };
     }
   }
 }

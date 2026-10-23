@@ -1,40 +1,16 @@
+// src/pages/coursedetails.jsx
 import { useState, useEffect } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { db, auth } from "../firebase/config";
-import { 
-  doc, 
-  getDoc, 
-  collection, 
-  query, 
-  where, 
-  getDocs,
-  serverTimestamp,
-  addDoc,
-  updateDoc,
-  deleteDoc,  // Add this import
-  onSnapshot
+import {
+  doc, getDoc, collection, query, where, getDocs,
+  serverTimestamp, addDoc, updateDoc, deleteDoc, onSnapshot,
 } from "firebase/firestore";
 import {
-  ArrowLeft,
-  Clock,
-  Users,
-  BookOpen,
-  Star,
-  CheckCircle,
-  Calendar,
-  User,
-  Globe,
-  BarChart,
-  Award,
-  ChevronRight,
-  MessageSquare,
-  ThumbsUp,
-  Edit,
-  Trash2,
-  X
-} from "lucide-react"; // Add Edit, Trash2, X icons
-import RatingDisplay from './ratingdisplay.jsx';
-
+  ArrowLeft, Clock, Users, BookOpen, Star, CheckCircle,
+  ChevronRight, MessageSquare, Edit, Trash2, X,
+} from "lucide-react";
+import RatingDisplay from "./ratingdisplay.jsx";
 
 export default function CourseDetails() {
   const { courseId } = useParams();
@@ -43,28 +19,22 @@ export default function CourseDetails() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [isEnrolled, setIsEnrolled] = useState(false);
-  const [creator, setCreator] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [enrolling, setEnrolling] = useState(false);
-  
-  // Review form states
+
   const [showReviewForm, setShowReviewForm] = useState(false);
-  const [userReview, setUserReview] = useState('');
+  const [userReview, setUserReview] = useState("");
   const [userRating, setUserRating] = useState(0);
   const [submittingReview, setSubmittingReview] = useState(false);
-  
-  // NEW: State for tracking user's existing review
   const [existingUserReview, setExistingUserReview] = useState(null);
   const [isEditingReview, setIsEditingReview] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
+    const unsub = auth.onAuthStateChanged(async (currentUser) => {
       setUser(currentUser);
-      if (currentUser) {
-        await checkEnrollment(currentUser.uid);
-      }
+      if (currentUser) await checkEnrollment(currentUser.uid);
     });
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
   useEffect(() => {
@@ -72,56 +42,24 @@ export default function CourseDetails() {
       fetchCourseDetails();
       fetchCourseReviews();
     }
-  }, [courseId]);
+  }, [courseId, user]);
+
   useEffect(() => {
-  if (!courseId) return;
-  
-  // Real-time listener for course updates
-  const courseRef = doc(db, "courses", courseId);
-  const unsubscribe = onSnapshot(courseRef, (docSnapshot) => {
-    if (docSnapshot.exists()) {
-      const updatedCourse = {
-        id: docSnapshot.id,
-        ...docSnapshot.data()
-      };
-      setCourse(updatedCourse);
-      console.log('📡 Real-time update: Course rating changed');
-    }
-  });
-  
-  return () => unsubscribe();
-}, [courseId]);
+    if (!courseId) return;
+    const unsub = onSnapshot(doc(db, "courses", courseId), (snap) => {
+      if (snap.exists()) setCourse({ id: snap.id, ...snap.data() });
+    });
+    return () => unsub();
+  }, [courseId]);
 
   const fetchCourseDetails = async () => {
     try {
       setLoading(true);
-      
-      // Fetch course data
-      const courseRef = doc(db, "courses", courseId);
-      const courseSnap = await getDoc(courseRef);
-      
-      if (!courseSnap.exists()) {
-        navigate("/catalog");
-        return;
-      }
-      
-      const courseData = {
-        id: courseSnap.id,
-        ...courseSnap.data()
-      };
-      setCourse(courseData);
-      
-      // Fetch creator info if creatorId exists
-      if (courseData.creatorId) {
-        const creatorRef = doc(db, "users", courseData.creatorId);
-        const creatorSnap = await getDoc(creatorRef);
-        if (creatorSnap.exists()) {
-          setCreator(creatorSnap.data());
-        }
-      }
-      
-    } catch (error) {
-      console.error("Error fetching course details:", error);
+      const snap = await getDoc(doc(db, "courses", courseId));
+      if (!snap.exists()) return navigate("/courses");
+      setCourse({ id: snap.id, ...snap.data() });
+    } catch (err) {
+      console.error("Error fetching course:", err);
     } finally {
       setLoading(false);
     }
@@ -129,155 +67,148 @@ export default function CourseDetails() {
 
   const fetchCourseReviews = async () => {
     try {
-      // Fetch actual reviews from Firestore
-      const reviewsRef = collection(db, "reviews");
-      const reviewsQuery = query(reviewsRef, where("courseId", "==", courseId));
-      const reviewsSnap = await getDocs(reviewsQuery);
-      
-      const reviewsData = reviewsSnap.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data(),
-        // Convert Firestore timestamp to readable date
-        date: doc.data().createdAt?.toDate().toLocaleDateString() || "Recently",
-        updatedDate: doc.data().updatedAt?.toDate().toLocaleDateString()
+      const q = query(collection(db, "reviews"), where("courseId", "==", courseId));
+      const snap = await getDocs(q);
+      const data = snap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+        date: d.data().createdAt?.toDate().toLocaleDateString() || "Recently",
+        updatedDate: d.data().updatedAt?.toDate().toLocaleDateString(),
       }));
-      
-      setReviews(reviewsData);
-      
-      // Check if current user has already reviewed
+      setReviews(data);
       if (user) {
-        const userReview = reviewsData.find(review => review.userId === user.uid);
-        if (userReview) {
-          setExistingUserReview(userReview);
-        } else {
-          setExistingUserReview(null);
-        }
+        const mine = data.find((r) => r.userId === user.uid);
+        setExistingUserReview(mine || null);
       }
-      
-    } catch (error) {
-      console.error("Error fetching reviews:", error);
+    } catch (err) {
+      console.error("Error fetching reviews:", err);
     }
   };
 
   const checkEnrollment = async (userId) => {
     try {
-      const enrollmentsRef = collection(db, "enrollments");
-      const enrollmentQuery = query(
-        enrollmentsRef,
+      const q = query(
+        collection(db, "enrollments"),
         where("userId", "==", userId),
         where("courseId", "==", courseId)
       );
-      const enrollmentSnap = await getDocs(enrollmentQuery);
-      setIsEnrolled(!enrollmentSnap.empty);
-    } catch (error) {
-      console.error("Error checking enrollment:", error);
+      const snap = await getDocs(q);
+      setIsEnrolled(!snap.empty);
+    } catch (err) {
+      console.error("Error checking enrollment:", err);
     }
   };
 
-  // Function to handle review submission - UPDATED
- // In coursedetails.jsx, UPDATE handleSubmitReview:
-const handleSubmitReview = async () => {
-  if (!user) {
-    alert('Please login to submit a review');
-    navigate('/login');
-    return;
-  }
-  
-  if (!userRating || userReview.length < 10) {
-    alert('Please provide a rating (1-5 stars) and review (minimum 10 characters)');
-    return;
-  }
-  
-  setSubmittingReview(true);
-  
-  try {
-    // Check for existing review
-    const reviewsRef = collection(db, "reviews");
-    const existingReviewQuery = query(
-      reviewsRef,
-      where("courseId", "==", courseId),
-      where("userId", "==", user.uid)
-    );
-    const existingReviewSnap = await getDocs(existingReviewQuery);
-    
-    let reviewData = {
-      courseId,
-      userId: user.uid,
-      userName: user.displayName || user.email.split('@')[0],
-      rating: userRating,
-      comment: userReview,
-      userInitials: (user.displayName || user.email[0]).toUpperCase(),
-      updatedAt: serverTimestamp()
-    };
-    
-    if (!existingReviewSnap.empty) {
-      // UPDATE existing review
-      const existingReviewDoc = existingReviewSnap.docs[0];
-      reviewData.createdAt = existingReviewDoc.data().createdAt;
-      
-      await updateDoc(doc(db, "reviews", existingReviewDoc.id), reviewData);
-      console.log('✅ Updated existing review');
-      
-    } else {
-      // CREATE new review
-      reviewData.createdAt = serverTimestamp();
-      await addDoc(collection(db, "reviews"), reviewData);
-      console.log('✅ Created new review');
+  const handleEnroll = async () => {
+    if (!user) return navigate("/login");
+    setEnrolling(true);
+    try {
+      await auth.currentUser.getIdToken(true);
+      await addDoc(collection(db, "enrollments"), {
+        userId: user.uid,
+        courseId,
+        enrolledAt: serverTimestamp(),
+        progress: 0,
+        completedLessons: [],
+        status: "active",
+      });
+      await new Promise((r) => setTimeout(r, 400));
+      const verify = await getDocs(
+        query(
+          collection(db, "enrollments"),
+          where("userId", "==", user.uid),
+          where("courseId", "==", courseId)
+        )
+      );
+      if (verify.empty) return alert("Failed to enroll. Please try again.");
+      setIsEnrolled(true);
+      navigate(`/course/${courseId}`);
+    } catch (err) {
+      console.error("Enroll error:", err);
+      alert("Failed to enroll. Please try again.");
+    } finally {
+      setEnrolling(false);
     }
-    
-    // ⚠️ REMOVED: No need to call updateCourseRating anymore!
-    // Cloud Function will handle it automatically
-    
-    // Reset form
-    setUserReview('');
-    setUserRating(0);
-    setShowReviewForm(false);
-    setIsEditingReview(false);
-    
-    // The rating will update automatically via Firestore real-time listeners
-    // But we should still refresh to show the user's review immediately
-    await fetchCourseReviews();
-    
-    // Show success message
-    alert('✅ Review submitted successfully! The course rating will update momentarily.');
-    
-  } catch (error) {
-    console.error('Error submitting review:', error);
-    alert('❌ Failed to submit review. Please try again.');
-  } finally {
-    setSubmittingReview(false);
-  }
-};
+  };
 
-  // Function to delete a review
-  // Function to delete a review - UPDATED to refresh rating
-const handleDeleteReview = async () => {
-  if (!existingUserReview || !window.confirm('Are you sure you want to delete your review?')) {
-    return;
-  }
-  
-  try {
-    const reviewRef = doc(db, "reviews", existingUserReview.id);
-    await deleteDoc(reviewRef);
-    
-    // Update course rating AND get updated data
-    
-    
-    // Refresh data
-    await fetchCourseReviews();
-    await fetchCourseDetails();
-    
-    setExistingUserReview(null);
-    setIsEditingReview(false);
-    setShowReviewForm(false);
-    
-    alert('✅ Review deleted successfully!');
-  } catch (error) {
-    console.error('Error deleting review:', error);
-    alert('❌ Failed to delete review. Please try again.');
-  }
-};
-  // Function to start editing review
+  const handleUnenroll = async () => {
+    if (!user) return;
+    if (!window.confirm(`Unenroll from "${course.title}"? Your progress will be lost.`)) return;
+    try {
+      const q = query(
+        collection(db, "enrollments"),
+        where("userId", "==", user.uid),
+        where("courseId", "==", courseId)
+      );
+      const snap = await getDocs(q);
+      if (snap.empty) return;
+      await deleteDoc(doc(db, "enrollments", snap.docs[0].id));
+      setIsEnrolled(false);
+      alert("Unenrolled successfully.");
+    } catch (err) {
+      console.error("Unenroll error:", err);
+      alert("Failed to unenroll.");
+    }
+  };
+
+  const handleSubmitReview = async () => {
+    if (!user) return navigate("/login");
+    if (!userRating || userReview.length < 10) {
+      return alert("Please provide a rating and at least 10 characters.");
+    }
+    setSubmittingReview(true);
+    try {
+      const existing = await getDocs(
+        query(
+          collection(db, "reviews"),
+          where("courseId", "==", courseId),
+          where("userId", "==", user.uid)
+        )
+      );
+      const reviewData = {
+        courseId,
+        userId: user.uid,
+        userName: user.displayName || user.email.split("@")[0],
+        rating: userRating,
+        comment: userReview,
+        userInitials: (user.displayName || user.email[0]).toUpperCase(),
+        updatedAt: serverTimestamp(),
+      };
+      if (!existing.empty) {
+        reviewData.createdAt = existing.docs[0].data().createdAt;
+        await updateDoc(doc(db, "reviews", existing.docs[0].id), reviewData);
+      } else {
+        reviewData.createdAt = serverTimestamp();
+        await addDoc(collection(db, "reviews"), reviewData);
+      }
+      setUserReview("");
+      setUserRating(0);
+      setShowReviewForm(false);
+      setIsEditingReview(false);
+      await fetchCourseReviews();
+      alert("Review submitted!");
+    } catch (err) {
+      console.error("Review error:", err);
+      alert("Failed to submit review.");
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const handleDeleteReview = async () => {
+    if (!existingUserReview) return;
+    if (!window.confirm("Delete your review?")) return;
+    try {
+      await deleteDoc(doc(db, "reviews", existingUserReview.id));
+      setExistingUserReview(null);
+      setShowReviewForm(false);
+      await fetchCourseReviews();
+      await fetchCourseDetails();
+    } catch (err) {
+      console.error("Delete review error:", err);
+    }
+  };
+
   const handleEditReview = () => {
     if (existingUserReview) {
       setUserRating(existingUserReview.rating);
@@ -286,165 +217,32 @@ const handleDeleteReview = async () => {
       setShowReviewForm(true);
     }
   };
-  // Function to handle unenrollment
-const handleUnenroll = async () => {
-  if (!user) {
-    alert('Please login to manage your enrollments');
-    navigate('/login');
-    return;
-  }
 
-  if (!window.confirm(`Are you sure you want to unenroll from "${course.title}"?\n\nIf you unenroll, your progress will be lost.`)) {
-    return;
-  }
-
-  try {
-    // Find the enrollment document
-    const enrollmentsRef = collection(db, "enrollments");
-    const enrollmentQuery = query(
-      enrollmentsRef,
-      where("userId", "==", user.uid),
-      where("courseId", "==", courseId)
-    );
-    
-    const enrollmentSnap = await getDocs(enrollmentQuery);
-    
-    if (!enrollmentSnap.empty) {
-      const enrollmentDoc = enrollmentSnap.docs[0];
-      const enrollmentId = enrollmentDoc.id;
-      const enrollmentData = enrollmentDoc.data();
-      
-      // Optional: Check if user is actually enrolled
-      if (enrollmentData.userId !== user.uid) {
-        alert('❌ Permission denied. This enrollment does not belong to you.');
-        return;
-      }
-      
-      // Save progress before deleting
-      const progressData = {
-        userId: user.uid,
-        courseId,
-        courseTitle: course.title,
-        progress: enrollmentData.progress || 0,
-        completedLessons: enrollmentData.completedLessons || [],
-        lastAccessed: enrollmentData.lastAccessed || serverTimestamp(),
-        enrolledAt: enrollmentData.enrolledAt || serverTimestamp(),
-        unenrolledAt: serverTimestamp(),
-        preservedUntil: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000) // 90 days from now
-      };
-      
-      try {
-        // Save progress to 'unenrolledProgress' collection
-        await addDoc(collection(db, "unenrolledProgress"), progressData);
-      } catch (progressError) {
-        console.warn('Could not save progress backup:', progressError);
-        // Continue anyway - main unenrollment is more important
-      }
-      
-      // Delete the enrollment
-      await deleteDoc(doc(db, "enrollments", enrollmentId));
-      
-      // Update local state
-      setIsEnrolled(false);
-      
-      // Show success message
-      alert(`✅ Successfully unenrolled from "${course.title}".\n\nYour progress will be lost. You can re-enroll anytime.`);
-      
-    } else {
-      alert('Enrollment record not found. You may already be unenrolled.');
-      setIsEnrolled(false);
-    }
-    
-  } catch (error) {
-    console.error('Error unenrolling:', error);
-    
-    // Show specific error message
-    if (error.code === 'permission-denied') {
-      alert('❌ Permission denied. Please make sure you are logged in and this enrollment belongs to you.');
-    } else {
-      alert('❌ Failed to unenroll. Please try again or contact support.');
-    }
-  }
-};
-
-  // Function to cancel review
   const handleCancelReview = () => {
     setShowReviewForm(false);
     setIsEditingReview(false);
-    setUserReview('');
+    setUserReview("");
     setUserRating(0);
-  };
-
-  const handleEnroll = async () => {
-    if (!user) {
-      navigate("/login");
-      return;
-    }
-
-    setEnrolling(true);
-    try {
-      await auth.currentUser.getIdToken(true);
-      
-      const enrollmentData = {
-        userId: user.uid,
-        courseId,
-        enrolledAt: serverTimestamp(),
-        progress: 0,
-        completedLessons: [],
-        status: "active"
-      };
-
-      try {
-        await addDoc(collection(db, "enrollments"), enrollmentData);
-      } catch (addError) {
-        console.log("Note: addDoc threw error:", addError.message);
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 400));
-      
-      // Verify enrollment
-      const enrollmentsRef = collection(db, "enrollments");
-      const verifyQuery = query(
-        enrollmentsRef,
-        where("userId", "==", user.uid),
-        where("courseId", "==", courseId)
-      );
-      const verifySnap = await getDocs(verifyQuery);
-      
-      if (verifySnap.empty) {
-        alert("Failed to enroll. Please try again.");
-        return;
-      }
-      
-      setIsEnrolled(true);
-      navigate(`/course/${courseId}`);
-      
-    } catch (error) {
-      console.error("Enrollment process error:", error);
-      alert("Failed to enroll. Please try again.");
-    } finally {
-      setEnrolling(false);
-    }
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <div className="h-10 w-10 rounded-full border-2 border-slate-200 border-t-blue-800 animate-spin" />
       </div>
     );
   }
 
   if (!course) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="text-center">
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Course not found</h2>
+          <h2 className="text-lg font-semibold">Course not found</h2>
           <button
-            onClick={() => navigate("/catalog")}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            onClick={() => navigate("/courses")}
+            className="mt-4 rounded-lg bg-blue-800 px-4 py-2 text-sm font-medium text-white hover:bg-blue-900"
           >
-            Browse Courses
+            Browse courses
           </button>
         </div>
       </div>
@@ -454,653 +252,385 @@ const handleUnenroll = async () => {
   const isFree = course.isFree !== false && course.price === 0;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header with Back Navigation */}
-      <div className="bg-white border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
-          <button
-            onClick={() => navigate(-1)}
-            className="flex items-center gap-2 text-gray-600 hover:text-gray-800"
-          >
-            <ArrowLeft size={20} />
-            <span>Back to Catalog</span>
-          </button>
+    <div className="min-h-screen bg-white">
+      {/* Navbar */}
+      <nav className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+          <div className="flex h-16 items-center justify-between">
+            <button
+              onClick={() => navigate(-1)}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900"
+            >
+              <ArrowLeft className="h-4 w-4" /> Back
+            </button>
+            <div className="text-base font-semibold tracking-tight">Bizika LMS</div>
+          </div>
         </div>
-      </div>
+      </nav>
 
-      {/* Course Hero Section */}
-      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12">
-          <div className="flex flex-col lg:flex-row gap-8">
-            {/* Course Image/Thumbnail */}
-            <div className="lg:w-1/3">
-              <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4">
-                {course.thumbnailUrl ? (
-                  <img 
-                    src={course.thumbnailUrl} 
-                    alt={course.title}
-                    className="w-full h-64 object-cover rounded-xl"
-                  />
-                ) : (
-                  <div className="w-full h-64 bg-gradient-to-br from-blue-500 to-indigo-500 rounded-xl flex items-center justify-center">
-                    <BookOpen className="h-16 w-16 text-white/80" />
-                  </div>
-                )}
-                
-                {/* Price Badge */}
-                <div className="mt-4 flex justify-between items-center">
-                  <div>
-                    {isFree ? (
-                      <span className="text-3xl font-bold">Free</span>
-                    ) : (
-                      <div>
-                        <span className="text-3xl font-bold">${course.price || 0}</span>
-                        {course.originalPrice && (
-                          <span className="ml-2 text-lg line-through text-gray-300">
-                            ${course.originalPrice}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  
-                  <button
-                    onClick={handleEnroll}
-                    disabled={enrolling || isEnrolled}
-                    className={`px-6 py-3 rounded-lg font-semibold flex items-center gap-2 ${
-                      isEnrolled
-                        ? "bg-green-600 hover:bg-green-700"
-                        : "bg-white text-blue-600 hover:bg-gray-100"
-                    } ${enrolling ? "opacity-70 cursor-not-allowed" : ""}`}
-                  >
-                    {enrolling ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-                        Processing...
-                      </>
-                    ) : isEnrolled ? (
-                      <>
-                      <Link to={`/courses/${courseId}/lessons`} className="flex items-center gap-2">
-                        <CheckCircle size={20} />
-                        Continue Learning
-                      </Link>
-                      </>
-                    ) : (
-                      <>
-                        Enroll Now
-                        <ChevronRight size={20} />
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Course Info */}
-            <div className="lg:w-2/3">
-              <div className="mb-6">
-                <span className="px-3 py-1 bg-white/20 rounded-full text-sm">
+      {/* Header — royal blue band */}
+      <section className="bg-blue-800 text-white">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-12">
+          <div className="flex flex-col lg:flex-row gap-8 lg:gap-12">
+            {/* Left: info */}
+            <div className="flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="rounded-full border border-blue-700 px-2.5 py-1 text-blue-100">
                   {course.category || "General"}
                 </span>
-                <h1 className="text-4xl font-bold mt-4 mb-3">{course.title}</h1>
-                <p className="text-xl text-blue-100">{course.shortDescription}</p>
+                {course.level && (
+                  <span className="rounded-full border border-blue-700 px-2.5 py-1 text-blue-100 capitalize">
+                    {course.level}
+                  </span>
+                )}
+                {isFree && (
+                  <span className="rounded-full bg-green-600 px-2.5 py-1 font-medium">
+                    Free
+                  </span>
+                )}
+              </div>
+              <h1 className="mt-4 text-3xl md:text-4xl font-semibold tracking-tight leading-tight">
+                {course.title}
+              </h1>
+              {course.shortDescription && (
+                <p className="mt-4 text-base text-blue-100 max-w-2xl leading-relaxed">
+                  {course.shortDescription}
+                </p>
+              )}
+
+              <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm text-blue-100">
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-4 w-4" />
+                  {course.duration || "Self-paced"}
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <BookOpen className="h-4 w-4" />
+                  {course.lessonCount || 0} lessons
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Users className="h-4 w-4" />
+                  {course.enrolledCount || 0} enrolled
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+                  {(course.averageRating || 0).toFixed(1)}
+                  <span className="text-blue-200">
+                    ({course.totalReviews || 0})
+                  </span>
+                </span>
               </div>
 
-              {/* Stats */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Clock className="h-5 w-5" />
-                    <span className="font-medium">Duration</span>
+              <div className="mt-8">
+                {isEnrolled ? (
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={() => navigate(`/course/${courseId}`)}
+                      className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-6 py-3 text-sm font-medium text-white hover:bg-green-700"
+                    >
+                      <CheckCircle className="h-4 w-4" /> Continue learning
+                    </button>
+                    <button
+                      onClick={handleUnenroll}
+                      className="inline-flex items-center gap-2 rounded-lg border border-blue-700 px-6 py-3 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      Unenroll
+                    </button>
                   </div>
-                  <p className="text-lg">{course.duration || "Self-paced"}</p>
-                </div>
-                
-                <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <BookOpen className="h-5 w-5" />
-                    <span className="font-medium">Lessons</span>
+                ) : (
+                  <button
+                    onClick={handleEnroll}
+                    disabled={enrolling}
+                    className="inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 text-sm font-medium text-blue-800 hover:bg-slate-100 disabled:opacity-60"
+                  >
+                    {enrolling ? "Enrolling..." : "Enroll now"}
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Right: thumbnail */}
+            <div className="lg:w-80 flex-shrink-0">
+              <div className="aspect-video rounded-lg overflow-hidden border border-blue-700 bg-blue-900/40">
+                {course.thumbnailUrl ? (
+                  <img
+                    src={course.thumbnailUrl}
+                    alt={course.title}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <BookOpen className="h-12 w-12 text-blue-300" />
                   </div>
-                  <p className="text-lg">{course.lessonCount || 0} Lessons</p>
-                </div>
-                
-                <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Users className="h-5 w-5" />
-                    <span className="font-medium">Students</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Main content */}
+      <main className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-12">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+          {/* Left column */}
+          <div className="lg:col-span-2 space-y-10">
+            {/* About */}
+            <section>
+              <h2 className="text-xl font-semibold tracking-tight">About this course</h2>
+              <p className="mt-4 text-sm text-slate-600 leading-relaxed whitespace-pre-line">
+                {course.description || "No detailed description provided."}
+              </p>
+            </section>
+
+            {/* What you'll learn */}
+            {course.learningOutcomes?.length > 0 && (
+              <section>
+                <h2 className="text-xl font-semibold tracking-tight">What you'll learn</h2>
+                <ul className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {course.learningOutcomes.map((o, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+                      <CheckCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-green-600" />
+                      <span>{o}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {/* Reviews */}
+            <section id="reviews">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-semibold tracking-tight">Student reviews</h2>
+                {user && isEnrolled && !existingUserReview && !showReviewForm && (
+                  <button
+                    onClick={() => setShowReviewForm(true)}
+                    className="text-sm font-medium text-blue-800 hover:text-blue-900"
+                  >
+                    Write a review
+                  </button>
+                )}
+              </div>
+
+              {/* Review form */}
+              {showReviewForm && (
+                <div className="mt-6 rounded-lg border border-slate-200 p-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">
+                      {existingUserReview ? "Edit your review" : "Write your review"}
+                    </h3>
+                    <button
+                      onClick={handleCancelReview}
+                      className="p-1 text-slate-400 hover:text-slate-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
                   </div>
-                  <p className="text-lg">{course.enrolledCount || 0} Enrolled</p>
-                </div>
-                
-                <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Star className="h-5 w-5" />
-                    <span className="font-medium">Rating</span>
+
+                  <div className="mt-5">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 mb-2">
+                      Rating
+                    </label>
+                    <div className="flex gap-1">
+                      {[1, 2, 3, 4, 5].map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setUserRating(s)}
+                          className="p-0.5"
+                        >
+                          <Star
+                            className={`h-6 w-6 ${
+                              s <= userRating
+                                ? "fill-yellow-400 text-yellow-400"
+                                : "text-slate-300"
+                            }`}
+                          />
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <RatingDisplay 
-                      rating={course.averageRating || 0} 
-                      size="sm" 
-                      showNumber={false}
+
+                  <div className="mt-5">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 mb-2">
+                      Review
+                    </label>
+                    <textarea
+                      value={userReview}
+                      onChange={(e) => setUserReview(e.target.value)}
+                      rows={4}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800"
+                      placeholder="Share your experience with this course..."
                     />
-                    <span className="text-lg">
-                      {course.averageRating?.toFixed(1) || "0.0"}
-                    </span>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {userReview.length} / 10 minimum
+                    </p>
+                  </div>
+
+                  <div className="mt-5 flex gap-3">
+                    <button
+                      onClick={handleSubmitReview}
+                      disabled={submittingReview || !userRating || userReview.length < 10}
+                      className="rounded-lg bg-blue-800 px-4 py-2 text-sm font-medium text-white hover:bg-blue-900 disabled:opacity-50"
+                    >
+                      {submittingReview
+                        ? "Submitting..."
+                        : existingUserReview
+                        ? "Update review"
+                        : "Submit review"}
+                    </button>
+                    {existingUserReview && (
+                      <button
+                        onClick={handleDeleteReview}
+                        className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* Rating Section - UPDATED */}
-              <div className="mt-6 p-6 bg-white/10 backdrop-blur-sm rounded-2xl">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-lg font-semibold mb-2">Course Rating</h3>
-                    <div className="flex items-center gap-4">
-                      <RatingDisplay rating={course.averageRating || 0} size="lg" />
-                      <div>
-                        <div className="text-3xl font-bold">
-                          {course.averageRating?.toFixed(1) || '0.0'}
+              {/* Existing user review banner */}
+              {existingUserReview && !showReviewForm && (
+                <div className="mt-6 rounded-lg border border-slate-200 p-5 bg-slate-50/60">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-full bg-blue-800 flex items-center justify-center text-white text-xs font-semibold">
+                          {existingUserReview.userInitials}
                         </div>
-                        <div className="text-blue-100">
-                          {course.totalReviews || 0} {course.totalReviews === 1 ? 'review' : 'reviews'}
+                        <div>
+                          <p className="text-sm font-medium">Your review</p>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            {[...Array(5)].map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`h-3.5 w-3.5 ${
+                                  i < existingUserReview.rating
+                                    ? "fill-yellow-400 text-yellow-400"
+                                    : "text-slate-300"
+                                }`}
+                              />
+                            ))}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                  
-                  {/* Updated button with logic for existing reviews */}
-                  {user && isEnrolled ? (
-                    <div className="flex gap-2">
-                      {existingUserReview && !showReviewForm && (
-                        <>
-                          <button
-                            onClick={handleEditReview}
-                            className="px-4 py-3 bg-white text-blue-600 rounded-lg font-semibold hover:bg-gray-100 flex items-center gap-2"
-                          >
-                            <Edit size={18} />
-                            Edit Review
-                          </button>
-                          <button
-                            onClick={handleDeleteReview}
-                            className="px-4 py-3 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 flex items-center gap-2"
-                          >
-                            <Trash2 size={18} />
-                            Delete
-                          </button>
-                        </>
-                      )}
-                      {(!existingUserReview || showReviewForm) && (
-                        <button
-                          onClick={() => {
-                            if (showReviewForm) {
-                              handleCancelReview();
-                            } else if (existingUserReview) {
-                              handleEditReview();
-                            } else {
-                              setShowReviewForm(true);
-                            }
-                          }}
-                          className="px-6 py-3 bg-white text-blue-600 rounded-lg font-semibold hover:bg-gray-100 flex items-center gap-2"
-                        >
-                          {showReviewForm ? (
-                            <>
-                              <X size={18} />
-                              Cancel
-                            </>
-                          ) : existingUserReview ? (
-                            <>
-                              <Edit size={18} />
-                              Edit Review
-                            </>
-                          ) : (
-                            'Write a Review'
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  ) : user ? (
-                    <button
-                      onClick={handleEnroll}
-                      className="px-6 py-3 bg-white text-blue-600 rounded-lg font-semibold hover:bg-gray-100"
-                    >
-                      Enroll to Review
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => navigate('/login')}
-                      className="px-6 py-3 bg-white text-blue-600 rounded-lg font-semibold hover:bg-gray-100"
-                    >
-                      Login to Review
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Creator Info */}
-              {creator && (
-                <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 mb-6 mt-6">
-                  <h3 className="font-semibold text-lg mb-3">Course Instructor</h3>
-                  <div className="flex items-center gap-4">
-                    <div className="h-12 w-12 rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 flex items-center justify-center text-white font-bold">
-                      {creator.firstName?.[0] || creator.email?.[0] || "A"}
-                    </div>
-                    <div>
-                      <h4 className="font-semibold">
-                        {creator.fullName || creator.email}
-                      </h4>
-                      <p className="text-blue-100 text-sm">
-                        {creator.role === "admin" ? "Platform Admin" : "Instructor"}
+                      <p className="mt-3 text-sm text-slate-700 italic">
+                        "{existingUserReview.comment}"
                       </p>
                     </div>
+                    <div className="flex gap-2 ml-4">
+                      <button
+                        onClick={handleEditReview}
+                        className="p-2 text-slate-500 hover:text-blue-800"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={handleDeleteReview}
+                        className="p-2 text-slate-500 hover:text-red-600"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Review Form Section - UPDATED */}
-      {showReviewForm && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-          <div className="bg-white rounded-2xl shadow border p-6 mb-8">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-semibold">
-                {existingUserReview ? 'Edit Your Review' : 'Write Your Review'}
-              </h3>
-              {existingUserReview && (
-                <button
-                  onClick={handleDeleteReview}
-                  className="px-4 py-2 text-red-600 hover:text-red-800 text-sm font-medium flex items-center gap-1"
-                >
-                  <Trash2 size={16} />
-                  Delete Review
-                </button>
-              )}
-            </div>
-            
-            {/* Show existing review preview when editing */}
-            {existingUserReview && isEditingReview && (
-              <div className="mb-6 p-4 bg-gray-50 rounded-lg border">
-                <h4 className="font-medium text-gray-900 mb-2">Your Current Review:</h4>
-                <div className="flex items-center gap-2 mb-2">
-                  {[...Array(5)].map((_, i) => (
-                    <Star
-                      key={i}
-                      size={16}
-                      className={i < existingUserReview.rating 
-                        ? 'text-yellow-500 fill-current' 
-                        : 'text-gray-300'
-                      }
-                    />
-                  ))}
-                  <span className="text-sm text-gray-600">
-                    {existingUserReview.rating}.0 stars
-                  </span>
-                </div>
-                <p className="text-gray-700 text-sm italic">
-                  "{existingUserReview.comment}"
-                </p>
-                <p className="text-xs text-gray-500 mt-2">
-                  Posted on: {existingUserReview.date}
-                </p>
-              </div>
-            )}
-            
-            {/* Star Rating */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Your Rating
-              </label>
-              <div className="flex gap-1">
-                {[1, 2, 3, 4, 5].map((star) => (
-                  <button
-                    key={star}
-                    type="button"
-                    onClick={() => setUserRating(star)}
-                    className="p-1 hover:scale-110 transition-transform"
-                  >
-                    <Star
-                      size={32}
-                      className={`${
-                        star <= userRating
-                          ? 'text-yellow-500 fill-current'
-                          : 'text-gray-300'
-                      }`}
-                    />
-                  </button>
-                ))}
-              </div>
-              <p className="text-sm text-gray-500 mt-2">
-                Selected: {userRating} out of 5
-              </p>
-            </div>
-            
-            {/* Review Text */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Your Review
-              </label>
-              <textarea
-                value={userReview}
-                onChange={(e) => setUserReview(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                rows="4"
-                placeholder={existingUserReview 
-                  ? "Update your review..." 
-                  : "Share your thoughts about this course..."
-                }
-                minLength="10"
-              />
-              <p className="text-sm text-gray-500 mt-2">
-                Minimum 10 characters. Current: {userReview.length}
-              </p>
-            </div>
-            
-            {/* Submit Button */}
-            <div className="flex gap-3">
-              <button
-                onClick={handleSubmitReview}
-                disabled={!userRating || userReview.length < 10 || submittingReview}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {submittingReview ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    {existingUserReview ? 'Updating...' : 'Submitting...'}
-                  </>
-                ) : (
-                  existingUserReview ? 'Update Review' : 'Submit Review'
-                )}
-              </button>
-              
-              <button
-                onClick={handleCancelReview}
-                className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Column - Course Details */}
-          <div className="lg:col-span-2">
-            {/* Course Description */}
-            <div className="bg-white rounded-2xl shadow border p-6 mb-6">
-              <h2 className="text-2xl font-bold text-gray-900 mb-4">Course Description</h2>
-              <div className="prose max-w-none text-gray-700">
-                {course.description ? (
-                  <p className="whitespace-pre-line">{course.description}</p>
-                ) : (
-                  <p>No detailed description available for this course.</p>
-                )}
-              </div>
-            </div>
-
-            {/* What You'll Learn */}
-            {course.learningOutcomes && course.learningOutcomes.length > 0 && (
-              <div className="bg-white rounded-2xl shadow border p-6 mb-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">What You'll Learn</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {course.learningOutcomes.map((outcome, index) => (
-                    <div key={index} className="flex items-start gap-3">
-                      <CheckCircle className="h-5 w-5 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span className="text-gray-700">{outcome}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Reviews Section - UPDATED */}
-            <div className="bg-white rounded-2xl shadow border p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-gray-900">Student Reviews</h2>
-                <div className="flex items-center gap-2">
-                  <Star className="h-5 w-5 text-yellow-500 fill-current" />
-                  <span className="text-lg font-semibold">
-                    {course.averageRating?.toFixed(1) || "0.0"}
-                  </span>
-                  <span className="text-gray-500">({reviews.length} reviews)</span>
-                </div>
-              </div>
-
+              {/* Reviews list */}
               {reviews.length > 0 ? (
-                <div className="space-y-6">
-                  {reviews.map((review) => (
-                    <div key={review.id} className="border-b pb-6 last:border-0 last:pb-0">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 rounded-full bg-gradient-to-r from-blue-400 to-purple-500 flex items-center justify-center text-white font-bold">
-                            {review.userInitials || review.userName?.[0] || "U"}
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h4 className="font-semibold">{review.userName}</h4>
-                              {user && review.userId === user.uid && (
-                                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full">
-                                  Your Review
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1">
+                <div className="mt-6 space-y-6">
+                  {reviews.map((r) => (
+                    <div key={r.id} className="border-b border-slate-100 pb-6 last:border-0">
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 text-xs font-semibold">
+                          {r.userInitials || r.userName?.[0]?.toUpperCase() || "U"}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{r.userName}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <div className="flex">
                               {[...Array(5)].map((_, i) => (
                                 <Star
                                   key={i}
-                                  className={`h-4 w-4 ${
-                                    i < review.rating
-                                      ? "text-yellow-500 fill-current"
-                                      : "text-gray-300"
+                                  className={`h-3.5 w-3.5 ${
+                                    i < r.rating
+                                      ? "fill-yellow-400 text-yellow-400"
+                                      : "text-slate-300"
                                   }`}
                                 />
                               ))}
                             </div>
+                            <span className="text-xs text-slate-400">{r.date}</span>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <span className="text-gray-500 text-sm block">{review.date}</span>
-                          {review.updatedDate && review.updatedDate !== review.date && (
-                            <span className="text-gray-400 text-xs block">Edited: {review.updatedDate}</span>
-                          )}
-                        </div>
                       </div>
-                      <p className="text-gray-700">{review.comment}</p>
-                      
-                      {/* Show edit/delete buttons for user's own reviews */}
-                      {user && review.userId === user.uid && !showReviewForm && (
-                            <div className="mt-2 flex gap-2">
-                                <button
-                                onClick={() => {
-                                    setExistingUserReview(review);
-                                    setUserRating(review.rating);
-                                    setUserReview(review.comment);
-                                    setShowReviewForm(true);
-                                    setIsEditingReview(true);
-                                }}
-                                className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 px-2 py-1 rounded border border-blue-200 hover:bg-blue-50 touch-manipulation"
-                                >
-                                <Edit size={12} />
-                                Edit
-                                </button>
-                                <button
-                                onClick={async () => {
-                                    if (window.confirm('Are you sure you want to delete your review?')) {
-                                    try {
-                                        await deleteDoc(doc(db, "reviews", review.id));
-                                        
-                                        // Update course rating
-                                        const ratingUpdate = await updateCourseRating(courseId);
-                                        
-                                        if (ratingUpdate.success) {
-                                        // ✅ Update local state
-                                        setCourse(prev => ({
-                                            ...prev,
-                                            averageRating: ratingUpdate.averageRating,
-                                            totalReviews: ratingUpdate.reviewCount
-                                        }));
-                                        }
-                                        
-                                        // Refresh data
-                                        await fetchCourseReviews();
-                                        await fetchCourseDetails();
-                                        
-                                        alert('✅ Review deleted successfully!');
-                                    } catch (error) {
-                                        console.error('Error deleting review:', error);
-                                        alert('❌ Failed to delete review. Please try again.');
-                                    }
-                                    }
-                                }}
-                                className="text-xs text-red-600 hover:text-red-800 flex items-center gap-1 px-2 py-1 rounded border border-red-200 hover:bg-red-50 touch-manipulation"
-                                >
-                                <Trash2 size={12} />
-                                Delete
-                                </button>
-                            </div>
-                            )}
-                      
+                      <p className="mt-3 text-sm text-slate-700">{r.comment}</p>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-8">
-                  <MessageSquare className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                  <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                    No Reviews Yet
-                  </h3>
-                  <p className="text-gray-600">
-                    Be the first to review this course!
-                  </p>
-                </div>
+                !showReviewForm && (
+                  <div className="mt-8 rounded-lg border border-dashed border-slate-300 p-10 text-center">
+                    <MessageSquare className="mx-auto h-6 w-6 text-slate-400" />
+                    <p className="mt-3 text-sm text-slate-500">
+                      No reviews yet. Be the first.
+                    </p>
+                  </div>
+                )
               )}
-            </div>
+            </section>
           </div>
 
-          {/* Right Column - Sidebar */}
-          <div className="lg:col-span-1">
-            {/* Course Features */}
-            <div className="bg-white rounded-2xl shadow border p-6 mb-6 sticky top-6">
-              <h3 className="text-xl font-bold text-gray-900 mb-4">Course Features</h3>
-              
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center">
-                    <Clock className="h-5 w-5 text-blue-600" />
+          {/* Right sidebar */}
+          <aside className="lg:col-span-1">
+            <div className="sticky top-24 space-y-6">
+              <div className="rounded-lg border border-slate-200 p-5">
+                <h3 className="text-sm font-semibold">Course summary</h3>
+                <dl className="mt-4 space-y-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <dt className="text-slate-500">Level</dt>
+                    <dd className="font-medium capitalize">{course.level || "All"}</dd>
                   </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900">Lifetime Access</h4>
-                    <p className="text-sm text-gray-600">Access forever after enrolling</p>
+                  <div className="flex items-center justify-between">
+                    <dt className="text-slate-500">Lessons</dt>
+                    <dd className="font-medium">{course.lessonCount || 0}</dd>
                   </div>
-                </div>
-                
-                
-                
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-purple-50 flex items-center justify-center">
-                    <Globe className="h-5 w-5 text-purple-600" />
+                  <div className="flex items-center justify-between">
+                    <dt className="text-slate-500">Duration</dt>
+                    <dd className="font-medium">{course.duration || "Self-paced"}</dd>
                   </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900">Online Access</h4>
-                    <p className="text-sm text-gray-600">Access from any device</p>
+                  <div className="flex items-center justify-between">
+                    <dt className="text-slate-500">Enrolled</dt>
+                    <dd className="font-medium">{course.enrolledCount || 0}</dd>
                   </div>
-                </div>
-                
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-orange-50 flex items-center justify-center">
-                    <BarChart className="h-5 w-5 text-orange-600" />
+                  <div className="flex items-center justify-between">
+                    <dt className="text-slate-500">Rating</dt>
+                    <dd className="flex items-center gap-1.5">
+                      <RatingDisplay
+                        rating={course.averageRating || 0}
+                        size="sm"
+                        showNumber={false}
+                      />
+                      <span className="font-medium">
+                        {(course.averageRating || 0).toFixed(1)}
+                      </span>
+                    </dd>
                   </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900">Beginner Friendly</h4>
-                    <p className="text-sm text-gray-600">No prior knowledge required</p>
-                  </div>
-                </div>
+                </dl>
               </div>
-              
-              {/* Enroll Button (for mobile/quick access) */}
-              <div className="mt-8 pt-6 border-t">
+
+              {!isEnrolled && (
                 <button
                   onClick={handleEnroll}
-                  disabled={enrolling || isEnrolled}
-                  className={`w-full py-3 rounded-lg font-semibold flex items-center justify-center gap-2 ${
-                    isEnrolled
-                      ? "bg-green-600 hover:bg-green-700 text-white"
-                      : "bg-blue-600 hover:bg-blue-700 text-white"
-                  } ${enrolling ? "opacity-70 cursor-not-allowed" : ""}`}
+                  disabled={enrolling}
+                  className="w-full rounded-lg bg-blue-800 px-4 py-3 text-sm font-medium text-white hover:bg-blue-900 disabled:opacity-60"
                 >
-                  {enrolling ? (
-                    <>
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                      Processing...
-                    </>
-                  ) : isEnrolled ? (
-                    <>
-                      <CheckCircle size={20} />
-                      Continue Learning
-                    </>
-                  ) : (
-                    <>
-                      Enroll Now
-                      <ChevronRight size={20} />
-                    </>
-                  )}
+                  {enrolling ? "Enrolling..." : "Enroll now"}
                 </button>
-              </div>
+              )}
             </div>
-            {/* Unenroll Section */}
-{isEnrolled && (
-  <div className="mt-6 pt-6 border-t border-gray-200">
-    <div className="space-y-3">
-      <h4 className="font-medium text-gray-900">Manage Enrollment</h4>
-      
-      <button
-        onClick={handleUnenroll}
-        className="w-full py-3 px-4 bg-red-50 text-red-700 border border-red-200 rounded-lg font-medium hover:bg-red-100 hover:border-red-300 hover:text-red-800 transition-colors flex items-center justify-center gap-2"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
-        Unenroll from Course
-      </button>
-      
-      <div className="text-xs text-gray-500 space-y-1">
-        <p className="flex items-start gap-1">
-          <svg className="w-3 h-3 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-          </svg>
-          <span>Your progress will be lost</span>
-        </p>
-        <p className="flex items-start gap-1">
-          <svg className="w-3 h-3 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-          </svg>
-          <span>You can re-enroll anytime</span>
-        </p>
-      </div>
-    </div>
-  </div>
-)}
-
-            {/* Share Course */}
-            {/* <div className="bg-white rounded-2xl shadow border p-6">
-              <h3 className="text-xl font-bold text-gray-900 mb-4">Share This Course</h3>
-              <div className="flex gap-3">
-                <button className="flex-1 py-2 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition-colors">
-                  Facebook
-                </button>
-                <button className="flex-1 py-2 bg-blue-400 text-white rounded-lg hover:bg-blue-500 transition-colors">
-                  Twitter
-                </button>
-                <button className="flex-1 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors">
-                  Email
-                </button>
-              </div>
-            </div> */}
-          </div>
+          </aside>
         </div>
       </main>
     </div>

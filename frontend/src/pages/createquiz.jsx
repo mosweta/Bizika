@@ -1,556 +1,794 @@
-// src/components/admin/CreateQuiz.jsx
-import { useState, useEffect } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { doc, getDoc, setDoc, deleteDoc, collection, getDocs } from "firebase/firestore";
+// src/pages/createquiz.jsx
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { doc, getDoc, setDoc, deleteDoc, collection, getCountFromServer } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { 
-  Plus, 
-  Trash2, 
-  Save, 
-  ArrowLeft, 
-  BookOpen, 
-  Hash,
-  Edit2,
-  Eye,
-  AlertCircle,
-  Clock,
-  Award,
-  Users,
-  FileText
+import {
+  ArrowLeft, Plus, Trash2, Save, Loader2, AlertCircle,
+  CheckCircle, ChevronDown, ChevronUp, GripVertical, X,
 } from "lucide-react";
+import { SkeletonBar } from "../components/Skeletons";
+
+// ─────────────────────────────────────────────────────────────
+// Validation
+// ─────────────────────────────────────────────────────────────
+function validateQuiz(quiz) {
+  const errors = {};
+  if (!quiz.title?.trim()) errors.title = "Title is required";
+  if (quiz.questions.length === 0) errors.questions = "Add at least one question";
+  quiz.questions.forEach((q, i) => {
+    if (!q.text?.trim()) errors[`q${i}_text`] = `Question ${i + 1} text required`;
+    const filled = q.options.filter((o) => o.trim());
+    if (filled.length < 2) errors[`q${i}_options`] = `Question ${i + 1} needs at least 2 options`;
+    if (!q.options[q.correctAnswer]?.trim()) {
+      errors[`q${i}_answer`] = `Question ${i + 1} has no correct answer`;
+    }
+  });
+  return errors;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Question card
+// ─────────────────────────────────────────────────────────────
+function QuestionCard({
+  question,
+  index,
+  onUpdate,
+  onDelete,
+  onMove,
+  isFirst,
+  isLast,
+}) {
+  const [expanded, setExpanded] = useState(true);
+
+  const setField = (key, value) =>
+    onUpdate({ ...question, [key]: value });
+
+  const setOption = (optIndex, value) => {
+    const options = [...question.options];
+    options[optIndex] = value;
+    setField("options", options);
+  };
+
+  const addOption = () => {
+    if (question.options.length >= 6) return;
+    setField("options", [...question.options, ""]);
+  };
+
+  const removeOption = (optIndex) => {
+    if (question.options.length <= 2) return;
+    const options = question.options.filter((_, i) => i !== optIndex);
+    let correct = question.correctAnswer;
+    if (optIndex === correct) correct = 0;
+    else if (optIndex < correct) correct -= 1;
+    onUpdate({ ...question, options, correctAnswer: correct });
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+        <GripVertical className="h-4 w-4 text-slate-300" />
+        <span className="text-xs font-medium text-slate-500 tabular-nums w-6">
+          {index + 1}
+        </span>
+        <span className="flex-1 text-sm text-slate-700 truncate">
+          {question.text || <span className="text-slate-400 italic">Untitled question</span>}
+        </span>
+        <span className="text-xs text-slate-400 tabular-nums">
+          {question.points} pt
+        </span>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="p-1 text-slate-400 hover:text-slate-700 rounded"
+        >
+          {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        </button>
+        <button
+          onClick={onDelete}
+          className="p-1 text-slate-400 hover:text-red-600 rounded"
+          title="Delete question"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="p-4 space-y-4">
+          {/* Question text */}
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              Question
+            </label>
+            <textarea
+              value={question.text}
+              onChange={(e) => setField("text", e.target.value)}
+              rows={2}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800 resize-y"
+              placeholder="What do you want to ask?"
+            />
+          </div>
+
+          {/* Options */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-slate-600">
+                Options
+              </label>
+              <span className="text-xs text-slate-400">
+                Click the circle to mark correct
+              </span>
+            </div>
+            <div className="space-y-2">
+              {question.options.map((opt, i) => {
+                const isCorrect = i === question.correctAnswer;
+                return (
+                  <div key={i} className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setField("correctAnswer", i)}
+                      className={`flex h-6 w-6 items-center justify-center rounded-full border-2 flex-shrink-0 transition-colors ${
+                        isCorrect
+                          ? "border-green-600 bg-green-600 text-white"
+                          : "border-slate-300 hover:border-slate-400"
+                      }`}
+                      title={isCorrect ? "Correct answer" : "Mark as correct"}
+                    >
+                      {isCorrect && <CheckCircle className="h-3.5 w-3.5" />}
+                    </button>
+                    <span className="text-xs text-slate-400 w-4 tabular-nums">
+                      {String.fromCharCode(65 + i)}
+                    </span>
+                    <input
+                      type="text"
+                      value={opt}
+                      onChange={(e) => setOption(i, e.target.value)}
+                      className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800"
+                      placeholder={`Option ${String.fromCharCode(65 + i)}`}
+                    />
+                    {question.options.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => removeOption(i)}
+                        className="p-1.5 text-slate-400 hover:text-red-600 rounded flex-shrink-0"
+                        title="Remove option"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {question.options.length < 6 && (
+              <button
+                type="button"
+                onClick={addOption}
+                className="mt-2 inline-flex items-center gap-1 text-xs text-blue-800 hover:text-blue-900"
+              >
+                <Plus className="h-3 w-3" />
+                Add option
+              </button>
+            )}
+          </div>
+
+          {/* Explanation + points */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="md:col-span-3">
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                Explanation <span className="text-slate-400">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={question.explanation || ""}
+                onChange={(e) => setField("explanation", e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800"
+                placeholder="Shown to students after they answer"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                Points
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={question.points}
+                onChange={(e) =>
+                  setField("points", Math.max(1, parseInt(e.target.value, 10) || 1))
+                }
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800 tabular-nums"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Skeleton
+// ─────────────────────────────────────────────────────────────
+function PageSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <SkeletonBar className="h-8 w-8 rounded-lg" />
+        <div className="flex-1">
+          <SkeletonBar className="h-5 w-48" />
+          <SkeletonBar className="mt-2 h-3 w-64" />
+        </div>
+      </div>
+      <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
+        <SkeletonBar className="h-10 w-full" />
+        <SkeletonBar className="h-10 w-full" />
+        <div className="grid grid-cols-3 gap-4">
+          <SkeletonBar className="h-10 w-full" />
+          <SkeletonBar className="h-10 w-full" />
+          <SkeletonBar className="h-10 w-full" />
+        </div>
+      </div>
+      <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3">
+        <SkeletonBar className="h-14 w-full" />
+        <SkeletonBar className="h-14 w-full" />
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────
+const EMPTY_QUESTION = () => ({
+  id: crypto.randomUUID(),
+  text: "",
+  type: "multiple-choice",
+  points: 10,
+  options: ["", "", "", ""],
+  correctAnswer: 0,
+  explanation: "",
+});
+
+const EMPTY_QUIZ = (courseId) => ({
+  title: "",
+  description: "",
+  passingScore: 70,
+  timeLimit: 30,
+  questions: [],
+  isActive: true,
+  isDraft: true,
+  courseId,
+});
 
 export default function CreateQuiz() {
   const { courseId } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
-  const [isEditMode, setIsEditMode] = useState(false);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [course, setCourse] = useState(null);
-  const [quiz, setQuiz] = useState({
-    title: "",
-    description: "",
-    passingScore: 70,
-    timeLimit: 30,
-    questions: [],
-    totalPoints: 100,
-    isActive: true,
-    courseId: courseId
-  });
-  const [newQuestion, setNewQuestion] = useState({
-    text: "",
-    type: "multiple-choice",
-    points: 10,
-    options: ["", "", "", ""],
-    correctAnswer: 0
-  });
+  const [quiz, setQuiz] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [quizStats, setQuizStats] = useState(null);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [validationErrors, setValidationErrors] = useState({});
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // Track whether this is the first load or an edit
+  const isNewRef = useRef(true);
+  const savedQuizRef = useRef(null);
+  const saveTimeoutRef = useRef(null);
+  const mountedRef = useRef(true);
+
+  // ── Load ─────────────────────────────────────────────────
   useEffect(() => {
-    if (courseId) {
-      fetchCourse();
-      fetchExistingQuiz();
-      checkEditMode();
-    }
-  }, [courseId, location]);
+    mountedRef.current = true;
 
-  const checkEditMode = () => {
-    const params = new URLSearchParams(location.search);
-    setIsEditMode(params.get('edit') === 'true');
-  };
+    async function load() {
+      try {
+        setLoading(true);
+        setError(null);
 
-  const fetchCourse = async () => {
-    try {
-      const courseDoc = await getDoc(doc(db, "courses", courseId));
-      if (courseDoc.exists()) {
-        setCourse({ id: courseDoc.id, ...courseDoc.data() });
-      }
-    } catch (error) {
-      console.error("Error fetching course:", error);
-    }
-  };
+        const [courseDoc, quizDoc] = await Promise.all([
+          getDoc(doc(db, "courses", courseId)),
+          getDoc(doc(db, "courses", courseId, "quizzes", "main")),
+        ]);
 
-  const fetchExistingQuiz = async () => {
-    try {
-      const quizRef = doc(db, "courses", courseId, "quizzes", "main");
-      const quizDoc = await getDoc(quizRef);
-      
-      if (quizDoc.exists()) {
-        const quizData = quizDoc.data();
-        setQuiz({
-          ...quizData,
-          courseId
-        });
-        
-        // Fetch quiz statistics if in edit mode
-        if (isEditMode) {
-          await fetchQuizStats();
+        if (!mountedRef.current) return;
+
+        if (courseDoc.exists()) {
+          setCourse({ id: courseDoc.id, ...courseDoc.data() });
+        } else {
+          setError("Course not found");
+          setLoading(false);
+          return;
         }
+
+        if (quizDoc.exists()) {
+          const data = quizDoc.data();
+          setQuiz({ ...EMPTY_QUIZ(courseId), ...data });
+          savedQuizRef.current = JSON.stringify(data);
+          isNewRef.current = false;
+        } else {
+          setQuiz(EMPTY_QUIZ(courseId));
+          isNewRef.current = true;
+        }
+      } catch (e) {
+        console.error("CreateQuiz load error:", e);
+        if (mountedRef.current) setError("Couldn't load the quiz.");
+      } finally {
+        if (mountedRef.current) setLoading(false);
       }
-    } catch (error) {
-      console.error("Error fetching quiz:", error);
     }
-  };
 
-  const fetchQuizStats = async () => {
-    try {
-      const quizResultsRef = collection(db, "courses", courseId, "quizResults");
-      const quizResultsSnap = await getDocs(quizResultsRef);
-      
-      if (quizResultsSnap.size > 0) {
-        const results = quizResultsSnap.docs.map(doc => doc.data());
-        const totalAttempts = results.length;
-        const scores = results.map(r => r.score || 0);
-        const averageScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-        const passedCount = results.filter(r => r.score >= quiz.passingScore).length;
-        const highestScore = Math.max(...scores);
-        
-        setQuizStats({
-          totalAttempts,
-          averageScore,
-          passedCount,
-          highestScore,
-          passRate: Math.round((passedCount / totalAttempts) * 100)
-        });
+    load();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [courseId]);
+
+  // ── Autosave ─────────────────────────────────────────────
+  const saveDraft = useCallback(
+    async (quizData) => {
+      if (!quizData || saving) return;
+      try {
+        setSaving(true);
+        const payload = {
+          ...quizData,
+          totalPoints: quizData.questions.reduce(
+            (sum, q) => sum + (q.points || 0),
+            0
+          ),
+          questionCount: quizData.questions.length,
+          updatedAt: new Date(),
+        };
+        if (isNewRef.current) {
+          payload.createdAt = new Date();
+          isNewRef.current = false;
+        }
+        await setDoc(
+          doc(db, "courses", courseId, "quizzes", "main"),
+          payload,
+          { merge: true }
+        );
+        savedQuizRef.current = JSON.stringify(quizData);
+        setLastSaved(new Date());
+      } catch (e) {
+        console.error("Autosave failed:", e);
+      } finally {
+        if (mountedRef.current) setSaving(false);
       }
-    } catch (error) {
-      console.error("Error fetching quiz stats:", error);
-    }
-  };
+    },
+    [courseId, saving]
+  );
 
-  const addQuestion = () => {
-    if (!newQuestion.text.trim() || newQuestion.options.some(opt => !opt.trim())) {
-      alert("Please fill in all fields for the question");
-      return;
-    }
+  // Trigger autosave 1.5s after the last change
+  useEffect(() => {
+    if (!quiz || loading) return;
+    const current = JSON.stringify(quiz);
+    if (current === savedQuizRef.current) return;
 
-    setQuiz(prev => ({
-      ...prev,
-      questions: [...prev.questions, { 
-        ...newQuestion, 
-        id: Date.now().toString() 
-      }]
-    }));
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveDraft(quiz);
+    }, 1500);
 
-    setNewQuestion({
-      text: "",
-      type: "multiple-choice",
-      points: 10,
-      options: ["", "", "", ""],
-      correctAnswer: 0
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [quiz, loading, saveDraft]);
+
+  // Warn on unload if there are unsaved changes
+  useEffect(() => {
+    const handler = (e) => {
+      if (quiz && JSON.stringify(quiz) !== savedQuizRef.current) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [quiz]);
+
+  // ── Handlers ─────────────────────────────────────────────
+  const updateQuiz = (patch) => setQuiz((prev) => ({ ...prev, ...patch }));
+
+  const updateQuestion = (index, next) => {
+    setQuiz((prev) => {
+      const questions = [...prev.questions];
+      questions[index] = next;
+      return { ...prev, questions };
     });
   };
 
-  const removeQuestion = (index) => {
-    setQuiz(prev => ({
+  const addQuestion = () => {
+    setQuiz((prev) => ({
       ...prev,
-      questions: prev.questions.filter((_, i) => i !== index)
+      questions: [...prev.questions, EMPTY_QUESTION()],
     }));
   };
 
-  const updateQuestion = (index, field, value) => {
-    const updatedQuestions = [...quiz.questions];
-    updatedQuestions[index] = {
-      ...updatedQuestions[index],
-      [field]: value
-    };
-    setQuiz(prev => ({ ...prev, questions: updatedQuestions }));
+  const deleteQuestion = (index) => {
+    if (!window.confirm("Delete this question?")) return;
+    setQuiz((prev) => ({
+      ...prev,
+      questions: prev.questions.filter((_, i) => i !== index),
+    }));
   };
 
-  const saveQuiz = async () => {
-    if (!quiz.title.trim()) {
-      alert("Please enter a quiz title");
+  const moveQuestion = (index, direction) => {
+    setQuiz((prev) => {
+      const questions = [...prev.questions];
+      const target = index + direction;
+      if (target < 0 || target >= questions.length) return prev;
+      [questions[index], questions[target]] = [questions[target], questions[index]];
+      return { ...prev, questions };
+    });
+  };
+
+  const handlePublish = async () => {
+    const errors = validateQuiz(quiz);
+    setValidationErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      setError("Fix the highlighted issues before publishing.");
       return;
     }
 
-    if (quiz.questions.length === 0) {
-      alert("Please add at least one question");
-      return;
-    }
-
-    if (quiz.questions.some(q => q.points <= 0)) {
-      alert("All questions must have positive points");
-      return;
-    }
-
-    setSaving(true);
     try {
-      const quizRef = doc(db, "courses", courseId, "quizzes", "main");
-      const quizData = {
-        ...quiz,
-        updatedAt: new Date(),
-        totalPoints: quiz.questions.reduce((sum, q) => sum + q.points, 0),
-        questionCount: quiz.questions.length
-      };
-
-      if (!isEditMode) {
-        quizData.createdAt = new Date();
-      }
-
-      await setDoc(quizRef, quizData);
-
-      // Update course to indicate it has a quiz
-      await setDoc(doc(db, "courses", courseId), {
-        hasQuiz: true
-      }, { merge: true });
-
-      alert(isEditMode ? "Quiz updated successfully!" : "Quiz created successfully!");
+      setSaving(true);
+      await setDoc(
+        doc(db, "courses", courseId, "quizzes", "main"),
+        {
+          ...quiz,
+          isDraft: false,
+          updatedAt: new Date(),
+          publishedAt: new Date(),
+          totalPoints: quiz.questions.reduce((s, q) => s + (q.points || 0), 0),
+          questionCount: quiz.questions.length,
+        },
+        { merge: true }
+      );
+      await setDoc(
+        doc(db, "courses", courseId),
+        { hasQuiz: true },
+        { merge: true }
+      );
+      alert("Quiz published.");
       navigate("/admin/quizzes");
-    } catch (error) {
-      console.error("Error saving quiz:", error);
-      alert(`Failed to ${isEditMode ? 'update' : 'save'} quiz: ${error.message}`);
+    } catch (e) {
+      console.error("publish error:", e);
+      setError("Failed to publish.");
     } finally {
       setSaving(false);
     }
   };
 
-  const deleteQuiz = async () => {
-    if (!window.confirm("Are you sure you want to delete this quiz? This action cannot be undone.")) {
-      return;
-    }
-
+  const handleDelete = async () => {
     try {
-      // Delete the quiz
-      const quizRef = doc(db, "courses", courseId, "quizzes", "main");
-      await deleteDoc(quizRef);
-
-      // Delete all quiz results
-      const quizResultsRef = collection(db, "courses", courseId, "quizResults");
-      const quizResultsSnap = await getDocs(quizResultsRef);
-      const deletePromises = quizResultsSnap.docs.map(docSnap => deleteDoc(docSnap.ref));
-      await Promise.all(deletePromises);
-
-      // Update course
-      await setDoc(doc(db, "courses", courseId), {
-        hasQuiz: false
-      }, { merge: true });
-
-      alert("Quiz deleted successfully!");
+      setSaving(true);
+      await deleteDoc(doc(db, "courses", courseId, "quizzes", "main"));
+      await setDoc(
+        doc(db, "courses", courseId),
+        { hasQuiz: false },
+        { merge: true }
+      );
+      alert("Quiz deleted.");
       navigate("/admin/quizzes");
-    } catch (error) {
-      console.error("Error deleting quiz:", error);
-      alert("Failed to delete quiz. Please try again.");
+    } catch (e) {
+      console.error("delete error:", e);
+      setError("Failed to delete.");
+    } finally {
+      setSaving(false);
     }
   };
 
+  // ── Derived ──────────────────────────────────────────────
+  const totalPoints = quiz?.questions.reduce((s, q) => s + (q.points || 0), 0) || 0;
+  const isDraft = quiz?.isDraft !== false;
+
+  // ── Render ───────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <button
+          onClick={() => navigate(-1)}
+          className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </button>
+        <PageSkeleton />
+      </div>
+    );
+  }
+
+  if (error && !quiz) {
+    return (
+      <div className="space-y-6">
+        <button
+          onClick={() => navigate(-1)}
+          className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </button>
+        <div className="rounded-lg border border-slate-200 bg-white p-12 text-center">
+          <AlertCircle className="mx-auto h-6 w-6 text-slate-400" />
+          <p className="mt-3 text-sm text-slate-500">
+            {error || "Could not load the quiz."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-6xl mx-auto space-y-6 px-2 md:px-0">
+    <div className="space-y-6 pb-24">
       {/* Header */}
-      <div className="bg-white rounded-xl shadow border p-4 md:p-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate("/admin/quizzes")}
-              className="p-2 hover:bg-gray-100 rounded-lg"
-            >
-              <ArrowLeft size={20} />
-            </button>
-            <div>
-              <h2 className="text-xl md:text-2xl font-bold text-gray-900">
-                {isEditMode ? "Edit Quiz" : "Create Quiz"}
-              </h2>
-              <div className="flex items-center gap-2 text-gray-600">
-                <BookOpen size={16} />
-                <span className="text-sm md:text-base">{course?.title || "Loading..."}</span>
-              </div>
-            </div>
-          </div>
-          
-          <div className="flex flex-wrap gap-3">
-            {isEditMode && quizStats && (
-              <div className="flex items-center gap-4 text-sm">
-                <div className="flex items-center gap-1">
-                  <Users size={14} />
-                  <span>{quizStats.totalAttempts} attempts</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Award size={14} />
-                  <span>Avg: {quizStats.averageScore}%</span>
-                </div>
-              </div>
-            )}
-            
-            <div className="flex gap-2">
-              {isEditMode && (
-                <button
-                  onClick={deleteQuiz}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
-                >
-                  <Trash2 size={18} />
-                  <span className="hidden md:inline">Delete Quiz</span>
-                </button>
-              )}
-              <button
-                onClick={saveQuiz}
-                disabled={saving}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 disabled:opacity-50"
-              >
-                {saving ? (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                ) : (
-                  <Save size={18} />
-                )}
-                <span>{isEditMode ? "Update Quiz" : "Save Quiz"}</span>
-              </button>
-            </div>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div className="flex items-start gap-3 min-w-0">
+          <button
+            onClick={() => navigate(-1)}
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded flex-shrink-0 mt-0.5"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-slate-900 truncate">
+              {isDraft ? "Create quiz" : "Edit quiz"}
+            </h1>
+            <p className="mt-0.5 text-sm text-slate-500 truncate">
+              {course?.title}
+            </p>
           </div>
         </div>
 
-        {/* Quiz Details */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 mb-6 md:mb-8">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {saving && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-slate-500">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Saving…
+            </span>
+          )}
+          {!saving && lastSaved && (
+            <span className="hidden sm:inline text-xs text-slate-400">
+              Saved
+            </span>
+          )}
+          {!isDraft && (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded border border-red-200 text-red-600 hover:bg-red-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Delete</span>
+            </button>
+          )}
+          <button
+            onClick={handlePublish}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded bg-blue-800 text-white hover:bg-blue-900 disabled:opacity-50"
+          >
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            {isDraft ? "Publish quiz" : "Save changes"}
+          </button>
+        </div>
+      </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span className="flex-1">{error}</span>
+          <button
+            onClick={() => setError(null)}
+            className="p-1 rounded hover:bg-red-100"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Quiz settings */}
+      <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
+        <h2 className="text-sm font-semibold text-slate-900">Quiz settings</h2>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">
+            Title
+          </label>
+          <input
+            type="text"
+            value={quiz.title}
+            onChange={(e) => updateQuiz({ title: e.target.value })}
+            className={`w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
+              validationErrors.title
+                ? "border-red-300 focus:border-red-500"
+                : "border-slate-200 focus:border-blue-800"
+            }`}
+            placeholder="e.g. Final assessment"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">
+            Description <span className="text-slate-400">(optional)</span>
+          </label>
+          <textarea
+            value={quiz.description}
+            onChange={(e) => updateQuiz({ description: e.target.value })}
+            rows={2}
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800 resize-y"
+            placeholder="What does this quiz cover?"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Quiz Title *
-            </label>
-            <input
-              type="text"
-              value={quiz.title}
-              onChange={(e) => setQuiz(prev => ({ ...prev, title: e.target.value }))}
-              className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              placeholder="e.g., Final Assessment"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Passing Score (%) *
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              Passing score (%)
             </label>
             <input
               type="number"
-              min="0"
+              min="1"
               max="100"
               value={quiz.passingScore}
-              onChange={(e) => setQuiz(prev => ({ ...prev, passingScore: parseInt(e.target.value) || 0 }))}
-              className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              onChange={(e) =>
+                updateQuiz({
+                  passingScore: Math.min(
+                    100,
+                    Math.max(1, parseInt(e.target.value, 10) || 1)
+                  ),
+                })
+              }
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800 tabular-nums"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Time Limit (minutes) *
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              Time limit (min)
             </label>
             <input
               type="number"
               min="1"
               value={quiz.timeLimit}
-              onChange={(e) => setQuiz(prev => ({ ...prev, timeLimit: parseInt(e.target.value) || 30 }))}
-              className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              onChange={(e) =>
+                updateQuiz({
+                  timeLimit: Math.max(1, parseInt(e.target.value, 10) || 1),
+                })
+              }
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-800 tabular-nums"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Quiz Status
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">
+              Status
             </label>
-            <select
-              value={quiz.isActive ? "active" : "inactive"}
-              onChange={(e) => setQuiz(prev => ({ ...prev, isActive: e.target.value === "active" }))}
-              className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </div>
-          <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Description
-            </label>
-            <textarea
-              value={quiz.description}
-              onChange={(e) => setQuiz(prev => ({ ...prev, description: e.target.value }))}
-              rows={3}
-              className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              placeholder="Describe what this quiz covers..."
-            />
-          </div>
-        </div>
-
-        {/* Add New Question */}
-        <div className="bg-gray-50 rounded-lg p-4 md:p-6 mb-6 md:mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Add New Question</h3>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Question Text *
-              </label>
-              <input
-                type="text"
-                value={newQuestion.text}
-                onChange={(e) => setNewQuestion(prev => ({ ...prev, text: e.target.value }))}
-                className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Enter the question..."
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Points *
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  value={newQuestion.points}
-                  onChange={(e) => setNewQuestion(prev => ({ ...prev, points: parseInt(e.target.value) || 1 }))}
-                  className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Correct Answer *
-                </label>
-                <select
-                  value={newQuestion.correctAnswer}
-                  onChange={(e) => setNewQuestion(prev => ({ ...prev, correctAnswer: parseInt(e.target.value) }))}
-                  className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  {newQuestion.options.map((_, index) => (
-                    <option key={index} value={index}>
-                      Option {index + 1}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Options */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Options (4 required) *
-              </label>
-              <div className="space-y-2">
-                {newQuestion.options.map((option, index) => (
-                  <div key={index} className="flex items-center gap-3">
-                    <div className="w-6 h-6 flex items-center justify-center rounded-full bg-gray-100">
-                      <span className="text-xs font-medium">{index + 1}</span>
-                    </div>
-                    <input
-                      type="text"
-                      value={option}
-                      onChange={(e) => {
-                        const newOptions = [...newQuestion.options];
-                        newOptions[index] = e.target.value;
-                        setNewQuestion(prev => ({ ...prev, options: newOptions }));
-                      }}
-                      className="flex-1 px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder={`Option ${index + 1}`}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <button
-              onClick={addQuestion}
-              className="w-full md:w-auto px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center justify-center gap-2"
-            >
-              <Plus size={20} />
-              Add Question
-            </button>
-          </div>
-        </div>
-
-        {/* Questions List */}
-        <div>
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">
-              Questions ({quiz.questions.length})
-            </h3>
-            <div className="text-gray-600">
-              Total Points: {quiz.questions.reduce((sum, q) => sum + q.points, 0)}
+            <div className="flex items-center h-10 px-3 rounded-lg border border-slate-200 bg-slate-50">
+              <span className="text-sm text-slate-600">
+                {isDraft ? "Draft" : "Published"}
+              </span>
             </div>
           </div>
-
-          {quiz.questions.length === 0 ? (
-            <div className="text-center py-8 border-2 border-dashed border-gray-300 rounded-lg">
-              <Hash className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-              <p className="text-gray-500">No questions added yet</p>
-              <p className="text-sm text-gray-400">Add your first question above</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {quiz.questions.map((question, index) => (
-                <div key={question.id || index} className="bg-white border border-gray-200 rounded-lg p-4 md:p-6">
-                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
-                    <div className="flex-1">
-                      <div className="flex items-start gap-3 mb-2">
-                        <div className="w-8 h-8 flex items-center justify-center rounded-full bg-blue-100 text-blue-700 font-semibold flex-shrink-0">
-                          {index + 1}
-                        </div>
-                        <h4 className="font-medium text-gray-900">{question.text}</h4>
-                        <span className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded-full flex-shrink-0">
-                          {question.points} points
-                        </span>
-                      </div>
-                      
-                      <div className="ml-0 md:ml-11 space-y-2">
-                        {question.options.map((option, optIndex) => (
-                          <div
-                            key={optIndex}
-                            className={`p-3 border rounded-lg ${
-                              optIndex === question.correctAnswer
-                                ? "border-green-500 bg-green-50"
-                                : "border-gray-200"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={`w-6 h-6 flex items-center justify-center rounded-full flex-shrink-0 ${
-                                optIndex === question.correctAnswer
-                                  ? "bg-green-500 text-white"
-                                  : "bg-gray-100 text-gray-600"
-                              }`}>
-                                {String.fromCharCode(65 + optIndex)}
-                              </div>
-                              <span className={optIndex === question.correctAnswer ? "font-medium text-green-700" : ""}>
-                                {option}
-                              </span>
-                              {optIndex === question.correctAnswer && (
-                                <span className="ml-auto text-xs text-green-600 font-medium">
-                                  Correct Answer
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => removeQuestion(index)}
-                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg self-start md:self-center"
-                    >
-                      <Trash2 size={20} />
-                    </button>
-                  </div>
-                  
-                  <div className="flex flex-col md:flex-row items-start md:items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      <label className="text-sm text-gray-600">Points:</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={question.points}
-                        onChange={(e) => updateQuestion(index, "points", parseInt(e.target.value) || 1)}
-                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-sm text-gray-600">Correct Answer:</label>
-                      <select
-                        value={question.correctAnswer}
-                        onChange={(e) => updateQuestion(index, "correctAnswer", parseInt(e.target.value))}
-                        className="px-2 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                      >
-                        {question.options.map((_, optIndex) => (
-                          <option key={optIndex} value={optIndex}>
-                            Option {optIndex + 1}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
+
+      {/* Questions */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">Questions</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {quiz.questions.length}{" "}
+              {quiz.questions.length === 1 ? "question" : "questions"} ·{" "}
+              {totalPoints} {totalPoints === 1 ? "point" : "points"}
+            </p>
+          </div>
+          <button
+            onClick={addQuestion}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
+          >
+            <Plus className="h-4 w-4" />
+            Add question
+          </button>
+        </div>
+
+        {validationErrors.questions && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {validationErrors.questions}
+          </div>
+        )}
+
+        {quiz.questions.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/60 p-12 text-center">
+            <p className="text-sm text-slate-500">
+              No questions yet. Add your first question to get started.
+            </p>
+            <button
+              onClick={addQuestion}
+              className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 text-sm rounded bg-blue-800 text-white hover:bg-blue-900"
+            >
+              <Plus className="h-4 w-4" />
+              Add question
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {quiz.questions.map((q, i) => (
+              <QuestionCard
+                key={q.id || i}
+                question={q}
+                index={i}
+                onUpdate={(next) => updateQuestion(i, next)}
+                onDelete={() => deleteQuestion(i)}
+                onMove={(dir) => moveQuestion(i, dir)}
+                isFirst={i === 0}
+                isLast={i === quiz.questions.length - 1}
+              />
+            ))}
+          </div>
+        )}
+
+        {quiz.questions.length > 0 && (
+          <button
+            onClick={addQuestion}
+            className="w-full rounded-lg border border-dashed border-slate-300 p-3 text-sm text-slate-500 hover:text-slate-900 hover:border-slate-400 transition-colors"
+          >
+            <Plus className="mx-auto h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Delete confirmation */}
+      {confirmDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          onClick={() => setConfirmDelete(false)}
+        >
+          <div
+            className="bg-white rounded-lg border border-slate-200 max-w-sm w-full p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center text-center">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-red-50">
+                <Trash2 className="h-5 w-5 text-red-600" />
+              </div>
+              <h3 className="mt-4 text-base font-semibold text-slate-900">
+                Delete quiz
+              </h3>
+              <p className="mt-1.5 text-sm text-slate-500">
+                This will permanently delete the quiz and all its results. This
+                cannot be undone.
+              </p>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="px-4 py-2 text-sm rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={saving}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {saving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

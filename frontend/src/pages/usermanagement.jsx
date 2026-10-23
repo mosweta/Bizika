@@ -1,540 +1,590 @@
-import { useState, useEffect } from "react";
-import { db, auth } from "../firebase/config";
-import { 
-  collection, 
-  query, 
-  orderBy, 
-  getDocs, 
-  updateDoc, 
-  doc,
-  where,
-  serverTimestamp,
-  getCountFromServer
+// src/pages/usermanagement.jsx
+import { useState, useEffect, useCallback, useRef } from "react";
+import { db } from "../firebase/config";
+import {
+  collection, query, orderBy, where, limit, startAfter,
+  getDocs, getCountFromServer, updateDoc, doc, serverTimestamp,
 } from "firebase/firestore";
-import { 
-  Search, 
-  Filter, 
-  ChevronLeft, 
-  ChevronRight,
-  Mail,
-  Calendar,
-  BookOpen,
-  Shield,
-  RefreshCw,
-  CheckCircle,
-  XCircle
+import {
+  Search, RefreshCw, ChevronDown, ChevronUp, X,
+  User as UserIcon, Mail, Shield, BookOpen, Loader2,
 } from "lucide-react";
+import { SkeletonStatRow, SkeletonBar, SkeletonCircle } from "../components/Skeletons";
 
-export default function UserManagement() {
-  const [users, setUsers] = useState([]);
+const PAGE_SIZE = 25;
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+function formatDate(value) {
+  if (!value) return "—";
+  const d = value.toDate ? value.toDate() : new Date(value);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Stat tile
+// ─────────────────────────────────────────────────────────────
+function Stat({ label, value, accent }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className={`mt-2 text-2xl font-semibold ${accent || "text-slate-900"}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enrollment detail drawer (opened by expanding a row)
+// ─────────────────────────────────────────────────────────────
+function EnrollmentPanel({ userId }) {
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [roleFilter, setRoleFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [levelFilter, setLevelFilter] = useState("all");
-  const [totalUsers, setTotalUsers] = useState(0);
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const pageSize = 20;
-const [enrolledCourseIds, setEnrolledCourseIds] = useState([]);
-const [user, setUser] = useState(null);
+  const [enrollments, setEnrollments] = useState([]);
 
-  // Stats
-  const [stats, setStats] = useState({
-    total: 0,
-    students: 0,
-    admins: 0,
-    activeToday: 0
-  });
-
-  // Fetch users with pagination
-  const fetchUsers = async () => {
-  try {
-    setLoading(true);
-    const usersRef = collection(db, "users");
-    
-    let q;
-    if (roleFilter !== "all") {
-      q = query(usersRef, where("role", "==", roleFilter), orderBy("createdAt", "desc"));
-    } else {
-      q = query(usersRef, orderBy("createdAt", "desc"));
-    }
-    
-    const snapshot = await getDocs(q);
-    
-    // Create an array to hold all user promises
-    const userPromises = snapshot.docs.map(async (doc) => {
-      const userData = doc.data();
-      const userId = doc.id;
-      
-      // Get enrollment count for this user
-      let enrollmentCount = 0;
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
       try {
-        const enrollmentsRef = collection(db, "enrollments");
-        const enrollmentQuery = query(
-          enrollmentsRef,
-          where("userId", "==", userId)
+        const snap = await getDocs(
+          query(collection(db, "enrollments"), where("userId", "==", userId))
         );
-        const countSnapshot = await getCountFromServer(enrollmentQuery);
-        enrollmentCount = countSnapshot.data().count;
-      } catch (countError) {
-        console.error(`Error counting enrollments for user ${userId}:`, countError);
-        // Fallback: regular query
-        try {
-          const enrollmentsRef = collection(db, "enrollments");
-          const enrollmentQuery = query(enrollmentsRef, where("userId", "==", userId));
-          const enrollmentSnap = await getDocs(enrollmentQuery);
-          enrollmentCount = enrollmentSnap.size;
-        } catch (fallbackError) {
-          enrollmentCount = 0;
-        }
+        if (cancelled) return;
+
+        // Fetch course titles for the enrollment rows in parallel
+        const courseIds = snap.docs.map((d) => d.data().courseId).filter(Boolean);
+        const courseMap = new Map();
+        await Promise.all(
+          courseIds.map(async (cid) => {
+            const c = await getDocs(query(collection(db, "courses"), where("__name__", "==", cid)));
+            if (!c.empty) courseMap.set(cid, c.docs[0].data());
+          })
+        );
+
+        if (cancelled) return;
+        setEnrollments(
+          snap.docs.map((d) => {
+            const data = d.data();
+            return {
+              id: d.id,
+              courseId: data.courseId,
+              courseTitle: courseMap.get(data.courseId)?.title || "Unknown course",
+              progress: data.progress || 0,
+            };
+          })
+        );
+      } catch (e) {
+        console.error("EnrollmentPanel error:", e);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      
-      return {
-        id: userId,
-        ...userData,
-        enrollmentCount: enrollmentCount,
-        createdAt: userData.createdAt
-      };
-    });
-    
-    // Wait for all user data to be fetched
-    const usersData = await Promise.all(userPromises);
-    
-    setUsers(usersData);
-    setTotalUsers(usersData.length);
-    setHasMore(usersData.length === pageSize);
-    
-    // Calculate stats including enrollment data
-    calculateStats(usersData);
-  } catch (error) {
-    console.error("Error fetching users:", error);
-  } finally {
-    setLoading(false);
-  }
-};
-
-  const calculateStats = (usersData) => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const stats = {
-      total: usersData.length,
-      students: usersData.filter(u => u.role === "student").length,
-      admins: usersData.filter(u => u.role === "admin").length,
-      activeToday: usersData.filter(u => {
-        const lastLogin = u.lastLogin?.toDate?.();
-        return lastLogin && lastLogin >= today;
-      }).length
-    };
-    
-    setStats(stats);
-  };
-
-  const handleSearch = () => {
-    if (!searchTerm.trim()) {
-      fetchUsers();
-      return;
     }
-    
-    const filtered = users.filter(user => 
-      user.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.fullName?.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-    setUsers(filtered);
-  };
+    load();
+    return () => { cancelled = true; };
+  }, [userId]);
 
-  const updateUserRole = async (userId, newRole) => {
-    if (!confirm(`Change this user's role to ${newRole}?`)) return;
-    
-    try {
-      const userRef = doc(db, "users", userId);
-      await updateDoc(userRef, {
-        role: newRole,
-        updatedAt: serverTimestamp()
-      });
-      
-      // Update local state
-      setUsers(prev => prev.map(user => 
-        user.id === userId ? { ...user, role: newRole } : user
-      ));
-      
-      // Recalculate stats
-      calculateStats(users.map(u => 
-        u.id === userId ? { ...u, role: newRole } : u
-      ));
-      
-      alert(`✅ User role updated to ${newRole}`);
-    } catch (error) {
-      console.error("Error updating user role:", error);
-      alert("Failed to update user role");
-    }
-  };
-
-  const toggleUserStatus = async (userId, currentStatus) => {
-    try {
-      const userRef = doc(db, "users", userId);
-      await updateDoc(userRef, {
-        status: currentStatus === "active" ? "suspended" : "active",
-        updatedAt: serverTimestamp()
-      });
-      
-      setUsers(prev => prev.map(user => 
-        user.id === userId ? { 
-          ...user, 
-          status: currentStatus === "active" ? "suspended" : "active" 
-        } : user
-      ));
-    } catch (error) {
-      console.error("Error updating user status:", error);
-    }
-  };
-const formatLastLogin = (date) => {
-  if (!date) {
+  if (loading) {
     return (
-      <div className="flex flex-col">
-        <span className="text-gray-400 italic">Never logged in</span>
-        <span className="text-xs text-gray-500 mt-1">User has never signed in</span>
+      <div className="px-5 py-4 bg-slate-50/60 border-t border-slate-100">
+        <SkeletonBar className="h-3 w-32 mb-3" />
+        <SkeletonBar className="h-3 w-48 mb-2" />
+        <SkeletonBar className="h-3 w-40" />
       </div>
     );
   }
-  
-  const dateObj = date instanceof Date ? date : date.toDate?.() || new Date(date);
-  const now = new Date();
-  const diffMs = now - dateObj;
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  
-  const getTimeAgo = () => {
-    if (diffHours < 1) {
-      const mins = Math.floor(diffMs / (1000 * 60));
-      return mins < 1 ? "just now" : `${mins} minutes ago`;
-    }
-    if (diffHours < 24) return `${diffHours} hours ago`;
-    if (diffDays === 1) return "yesterday";
-    if (diffDays < 7) return `${diffDays} days ago`;
-    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-    return `${Math.floor(diffDays / 30)} months ago`;
-  };
-  
-  const getStatusColor = () => {
-    if (diffHours < 24) return "text-green-600 bg-green-50";
-    if (diffDays < 7) return "text-blue-600 bg-blue-50";
-    if (diffDays < 30) return "text-yellow-600 bg-yellow-50";
-    return "text-red-600 bg-red-50";
-  };
-  
+
+  if (enrollments.length === 0) {
+    return (
+      <div className="px-5 py-4 bg-slate-50/60 border-t border-slate-100 text-sm text-slate-500">
+        Not enrolled in any courses.
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col">
-      <span className={`text-xs px-2 py-1 rounded inline-block w-fit ${getStatusColor()}`}>
-        {getTimeAgo()}
-      </span>
-      <span className="text-xs text-gray-500 mt-1">
-        {dateObj.toLocaleDateString()}
-      </span>
+    <div className="px-5 py-4 bg-slate-50/60 border-t border-slate-100">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500 mb-3">
+        <BookOpen className="h-3.5 w-3.5" />
+        {enrollments.length} {enrollments.length === 1 ? "enrollment" : "enrollments"}
+      </div>
+      <ul className="space-y-2">
+        {enrollments.map((enr) => (
+          <li key={enr.id} className="flex items-center justify-between gap-4 text-sm">
+            <span className="text-slate-700 truncate">{enr.courseTitle}</span>
+            <span className="text-slate-500 text-xs flex-shrink-0">{enr.progress}%</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
-};
+}
+
+// ─────────────────────────────────────────────────────────────
+// Role picker with inline confirm
+// ─────────────────────────────────────────────────────────────
+function RoleControl({ currentRole, onSave }) {
+  const [pending, setPending] = useState(null);
+
+  const handleSelect = (newRole) => {
+    if (newRole === currentRole) return;
+    setPending(newRole);
+  };
+
+  const confirm = async () => {
+    const next = pending;
+    setPending(null);
+    await onSave(next);
+  };
+
+  if (pending) {
+    return (
+      <div className="flex items-center gap-1">
+        <span className="text-xs text-slate-500">
+          Change to <strong>{pending}</strong>?
+        </span>
+        <button
+          onClick={confirm}
+          className="text-xs px-2 py-1 rounded bg-blue-800 text-white hover:bg-blue-900"
+        >
+          Yes
+        </button>
+        <button
+          onClick={() => setPending(null)}
+          className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+        >
+          No
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <select
+      value={currentRole}
+      onChange={(e) => handleSelect(e.target.value)}
+      className="text-xs border border-slate-200 rounded px-2 py-1 bg-white focus:outline-none focus:border-blue-800"
+    >
+      <option value="student">Student</option>
+      <option value="admin">Admin</option>
+    </select>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Row
+// ─────────────────────────────────────────────────────────────
+function UserRow({ user, expanded, onToggle, onChangeRole, onToggleStatus }) {
+  return (
+    <>
+      <tr className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div
+              className="h-9 w-9 rounded-full flex items-center justify-center flex-shrink-0 text-white text-xs font-semibold"
+              style={{ backgroundColor: user.avatarColor || "#1E40AF" }}
+            >
+              {(user.fullName || user.email || "U")[0].toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-slate-900 truncate">
+                {user.fullName || "—"}
+              </div>
+              <div className="text-xs text-slate-500 truncate">{user.email}</div>
+            </div>
+          </div>
+        </td>
+        <td className="px-4 py-3">
+          <span
+            className={`inline-block text-xs px-2 py-0.5 rounded ${
+              user.role === "admin"
+                ? "bg-blue-50 text-blue-800"
+                : "bg-slate-100 text-slate-700"
+            }`}
+          >
+            {user.role || "student"}
+          </span>
+        </td>
+        <td className="px-4 py-3">
+          <span
+            className={`inline-block text-xs px-2 py-0.5 rounded ${
+              user.status === "suspended"
+                ? "bg-red-50 text-red-700"
+                : "bg-green-50 text-green-700"
+            }`}
+          >
+            {user.status || "active"}
+          </span>
+        </td>
+        <td className="px-4 py-3 text-sm text-slate-600">{formatDate(user.createdAt)}</td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2">
+            <RoleControl
+              currentRole={user.role || "student"}
+              onSave={(role) => onChangeRole(user.id, role)}
+            />
+            <button
+              onClick={() => onToggleStatus(user.id, user.status)}
+              className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+            >
+              {user.status === "suspended" ? "Activate" : "Suspend"}
+            </button>
+            <button
+              onClick={onToggle}
+              className="p-1 text-slate-400 hover:text-slate-700 rounded"
+              title={expanded ? "Hide enrollments" : "Show enrollments"}
+            >
+              {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+          </div>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={5} className="p-0">
+            <EnrollmentPanel userId={user.id} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Skeleton
+// ─────────────────────────────────────────────────────────────
+function TableSkeleton() {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+      <table className="w-full">
+        <tbody>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <tr key={i} className="border-b border-slate-100">
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <SkeletonCircle className="h-9 w-9" />
+                  <div className="flex-1">
+                    <SkeletonBar className="h-3.5 w-32" />
+                    <SkeletonBar className="mt-1.5 h-3 w-48" />
+                  </div>
+                </div>
+              </td>
+              <td className="px-4 py-3"><SkeletonBar className="h-5 w-16" /></td>
+              <td className="px-4 py-3"><SkeletonBar className="h-5 w-16" /></td>
+              <td className="px-4 py-3"><SkeletonBar className="h-3 w-20" /></td>
+              <td className="px-4 py-3"><SkeletonBar className="h-7 w-40" /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────
+export default function UserManagement() {
+  const [stats, setStats] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [cursor, setCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const [loadingInitial, setLoadingInitial] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [expandedRow, setExpandedRow] = useState(null);
+  const mountedRef = useRef(true);
+
+  // Debounce search
   useEffect(() => {
-    fetchUsers();
+    const t = setTimeout(() => setSearchQuery(searchInput.trim().toLowerCase()), 150);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Load stats (parallel counts)
+  const loadStats = useCallback(async () => {
+    try {
+      const [total, students, admins, suspended] = await Promise.all([
+        getCountFromServer(collection(db, "users")),
+        getCountFromServer(query(collection(db, "users"), where("role", "==", "student"))),
+        getCountFromServer(query(collection(db, "users"), where("role", "==", "admin"))),
+        getCountFromServer(query(collection(db, "users"), where("status", "==", "suspended"))),
+      ]);
+      if (!mountedRef.current) return;
+      setStats({
+        total: total.data().count,
+        students: students.data().count,
+        admins: admins.data().count,
+        suspended: suspended.data().count,
+      });
+    } catch (e) {
+      console.error("loadStats error:", e);
+    }
+  }, []);
+
+  // Load first page
+  const loadFirstPage = useCallback(async () => {
+    setLoadingInitial(true);
+    try {
+      const baseConstraints = [orderBy("createdAt", "desc"), limit(PAGE_SIZE)];
+      const q =
+        roleFilter === "all"
+          ? query(collection(db, "users"), ...baseConstraints)
+          : query(
+              collection(db, "users"),
+              where("role", "==", roleFilter),
+              ...baseConstraints
+            );
+
+      const snap = await getDocs(q);
+      if (!mountedRef.current) return;
+      setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setCursor(snap.docs[snap.docs.length - 1] || null);
+      setHasMore(snap.size === PAGE_SIZE);
+    } catch (e) {
+      console.error("loadFirstPage error:", e);
+    } finally {
+      if (mountedRef.current) setLoadingInitial(false);
+    }
   }, [roleFilter]);
 
-const formatDate = (date) => {
-  if (!date) return "Never";
-  
-  // Handle Firestore Timestamp
-  if (date.toDate) {
-    return date.toDate().toLocaleDateString();
-  }
-  
-  // Handle timestamp with seconds/nanoseconds
-  if (date.seconds) {
-    const milliseconds = date.seconds * 1000 + (date.nanoseconds || 0) / 1000000;
-    return new Date(milliseconds).toLocaleDateString();
-  }
-  
-  return new Date(date).toLocaleDateString();
-};
-
-  const getRoleColor = (role) => {
-    switch(role) {
-      case "admin": return "bg-purple-100 text-purple-800";
-      default: return "bg-blue-100 text-blue-800";
-    }
-  };
-
-  const getStatusColor = (status) => {
-    return status === "active" 
-      ? "bg-green-100 text-green-800" 
-      : "bg-red-100 text-red-800";
-  };
-    useEffect(() => {
-      const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
-        if (currentUser) {
-          setUser(currentUser);
-          await fetchEnrolledCourses(currentUser.uid);
-        }
-      });
-      return () => unsubscribe();
-    }, []);
-const fetchEnrolledCourses = async (userId) => {
+  // Load next page
+  const loadMore = async () => {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
     try {
-      const enrollmentsRef = collection(db, "enrollments");
-      const enrollmentQuery = query(enrollmentsRef, where("userId", "==", userId));
-      const enrollmentSnap = await getDocs(enrollmentQuery);
-      
-      const enrolledIds = enrollmentSnap.docs.map(doc => doc.data().courseId);
-      setEnrolledCourseIds(enrolledIds);
-    } catch (error) {
-      console.error("Error fetching enrollments:", error);
+      const q = query(
+        collection(db, "users"),
+        orderBy("createdAt", "desc"),
+        startAfter(cursor),
+        limit(PAGE_SIZE)
+      );
+      const snap = await getDocs(q);
+      if (!mountedRef.current) return;
+      setUsers((prev) => [...prev, ...snap.docs.map((d) => ({ id: d.id, ...d.data() }))]);
+      setCursor(snap.docs[snap.docs.length - 1] || null);
+      setHasMore(snap.size === PAGE_SIZE);
+    } catch (e) {
+      console.error("loadMore error:", e);
+    } finally {
+      if (mountedRef.current) setLoadingMore(false);
     }
   };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    // Fire stats + first page in parallel
+    Promise.all([loadStats(), loadFirstPage()]);
+    return () => { mountedRef.current = false; };
+  }, [loadStats, loadFirstPage]);
+
+  // Reload when role filter changes
+  useEffect(() => {
+    loadFirstPage();
+  }, [loadFirstPage]);
+
+  const refresh = () => {
+    Promise.all([loadStats(), loadFirstPage()]);
+  };
+
+  // Optimistic role change
+  const handleChangeRole = async (userId, newRole) => {
+    const previous = users.find((u) => u.id === userId);
+    setUsers((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u))
+    );
+    try {
+      await updateDoc(doc(db, "users", userId), {
+        role: newRole,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Role change failed:", e);
+      if (previous) {
+        setUsers((prev) =>
+          prev.map((u) => (u.id === userId ? previous : u))
+        );
+      }
+      alert("Failed to update role.");
+    }
+  };
+
+  const handleToggleStatus = async (userId, currentStatus) => {
+    const next = currentStatus === "suspended" ? "active" : "suspended";
+    const previous = users.find((u) => u.id === userId);
+    setUsers((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, status: next } : u))
+    );
+    try {
+      await updateDoc(doc(db, "users", userId), {
+        status: next,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Status change failed:", e);
+      if (previous) {
+        setUsers((prev) =>
+          prev.map((u) => (u.id === userId ? previous : u))
+        );
+      }
+      alert("Failed to update status.");
+    }
+  };
+
+  // Client-side filter of loaded rows only
+  const visibleUsers = searchQuery
+    ? users.filter(
+        (u) =>
+          (u.fullName || "").toLowerCase().includes(searchQuery) ||
+          (u.email || "").toLowerCase().includes(searchQuery)
+      )
+    : users;
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">User Management</h3>
-          <p className="text-sm text-gray-600">Manage all users in your platform</p>
+          <h1 className="text-lg font-semibold text-slate-900">User management</h1>
+          <p className="mt-0.5 text-sm text-slate-500">
+            Manage user accounts, roles, and access
+          </p>
         </div>
         <button
-          onClick={fetchUsers}
-          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2"
+          onClick={refresh}
+          disabled={loadingInitial}
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
-          <RefreshCw size={16} />
+          <RefreshCw className={`h-4 w-4 ${loadingInitial ? "animate-spin" : ""}`} />
           Refresh
         </button>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <div className="bg-white rounded-xl p-4 shadow border">
-          <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
-          <div className="text-sm text-gray-600">Total Users</div>
-        </div>
-        <div className="bg-white rounded-xl p-4 shadow border">
-          <div className="text-2xl font-bold text-blue-600">{stats.students}</div>
-          <div className="text-sm text-gray-600">Students</div>
-        </div>
-        
-        <div className="bg-white rounded-xl p-4 shadow border">
-          <div className="text-2xl font-bold text-purple-600">{stats.admins}</div>
-          <div className="text-sm text-gray-600">Admins</div>
-        </div>
-      </div>
-
-      {/* Search and Filters */}
-      <div className="bg-white rounded-xl p-4 shadow border">
-        <div className="flex flex-col sm:flex-row gap-4">
-          <div className="flex-1">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
-              <input
-                type="text"
-                placeholder="Search by email or name..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <select
-              value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg"
-            >
-              <option value="all">All Roles</option>
-              <option value="student">Students</option>
-              <option value="admin">Admins</option>
-            </select>
-            <button
-              onClick={handleSearch}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              Search
-            </button>
-            <button
-              onClick={() => {
-                setSearchTerm("");
-                setRoleFilter("all");
-                fetchUsers();
-              }}
-              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Users Table */}
-      <div className="bg-white rounded-xl shadow border overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Joined</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {loading ? (
-                <tr>
-                  <td colSpan="6" className="px-4 py-8 text-center">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                    </div>
-                  </td>
-                </tr>
-              ) : users.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="px-4 py-8 text-center text-gray-500">
-                    No users found
-                  </td>
-                </tr>
-              ) : (
-                users.slice((page - 1) * pageSize, page * pageSize).map((user) => (
-                  <tr key={user.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center">
-                        <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
-                          {user.avatarColor ? (
-                            <div 
-                              className="h-10 w-10 rounded-full"
-                              style={{ backgroundColor: user.avatarColor }}
-                            />
-                          ) : (
-                            <span className="text-blue-600 font-semibold">
-                              {user.email?.[0]?.toUpperCase()}
-                            </span>
-                          )}
-                        </div>
-                        <div className="ml-3">
-                          <div className="font-medium text-gray-900">
-                            {user.fullName || "No name set"}
-                          </div>
-                          <div className="text-sm text-gray-500 flex items-center gap-1">
-                            <Mail size={12} />
-                            {user.email}
-                          </div>
-                          {user.enrollmentCount > -1 && (
-                            <div className="text-xs text-gray-400 flex items-center gap-1 mt-1">
-                              <BookOpen size={12} />
-                              {user.enrollmentCount} courses
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-1 text-xs rounded-full ${getRoleColor(user.role)}`}>
-                        {user.role}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-1 text-xs rounded-full ${getStatusColor(user.status)}`}>
-                        {user.status || "active"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900">
-                      <div className="flex items-center gap-1">
-                        <Calendar size={12} />
-                        {formatDate(user.createdAt)}
-                      </div>
-                    </td>
-                    
-                    <td className="px-4 py-3">
-                      <div className="flex flex-col gap-2">
-                        <select
-                          value={user.role}
-                          onChange={(e) => updateUserRole(user.id, e.target.value)}
-                          className="text-sm border border-gray-300 rounded px-2 py-1"
-                        >
-                          <option value="student">Student</option>
-                          
-                          <option value="admin">Admin</option>
-                        </select>
-                        <button
-                          onClick={() => toggleUserStatus(user.id, user.status)}
-                          className={`text-xs px-2 py-1 rounded flex items-center justify-center gap-1 ${
-                            user.status === "active" 
-                              ? "bg-red-50 text-red-700 hover:bg-red-100" 
-                              : "bg-green-50 text-green-700 hover:bg-green-100"
-                          }`}
-                        >
-                          {user.status === "active" ? (
-                            <>
-                              <XCircle size={12} />
-                              Suspend
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle size={12} />
-                              Activate
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        
-        {/* Pagination */}
-        {users.length > pageSize && (
-          <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between">
-            <div className="text-sm text-gray-700">
-              Showing <span className="font-medium">{(page - 1) * pageSize + 1}</span> to{" "}
-              <span className="font-medium">{Math.min(page * pageSize, users.length)}</span> of{" "}
-              <span className="font-medium">{users.length}</span> users
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPage(p => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="px-3 py-1 border rounded-lg disabled:opacity-50"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <span className="px-3 py-1 text-sm">
-                Page {page} of {Math.ceil(users.length / pageSize)}
-              </span>
-              <button
-                onClick={() => setPage(p => p + 1)}
-                disabled={page >= Math.ceil(users.length / pageSize)}
-                className="px-3 py-1 border rounded-lg disabled:opacity-50"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Quick Stats */}
-      <div className="bg-gray-50 rounded-xl p-4">
-        <h4 className="font-medium text-gray-900 mb-3">User Statistics</h4>
+      {/* Stats */}
+      {!stats ? (
+        <SkeletonStatRow count={4} />
+      ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="text-center p-3 bg-white rounded-lg">
-            <div className="text-lg font-bold text-gray-900">{stats.students}</div>
-            <div className="text-sm text-gray-600">Students</div>
+          <Stat label="Total users" value={stats.total.toLocaleString()} />
+          <Stat label="Students" value={stats.students.toLocaleString()} />
+          <Stat label="Admins" value={stats.admins.toLocaleString()} />
+          <Stat
+            label="Suspended"
+            value={stats.suspended.toLocaleString()}
+            accent={stats.suspended > 0 ? "text-red-600" : undefined}
+          />
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="rounded-lg border border-slate-200 bg-white p-4">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Filter loaded users…"
+              className="w-full pl-9 pr-8 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-blue-800"
+            />
+            {searchInput && (
+              <button
+                onClick={() => setSearchInput("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 rounded"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
-          
-          <div className="text-center p-3 bg-white rounded-lg">
-            <div className="text-lg font-bold text-purple-600">{stats.admins}</div>
-            <div className="text-sm text-gray-600">Admins</div>
-          </div>
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-blue-800"
+          >
+            <option value="all">All roles</option>
+            <option value="student">Students</option>
+            <option value="admin">Admins</option>
+          </select>
         </div>
       </div>
+
+      {/* Table */}
+      {loadingInitial ? (
+        <TableSkeleton />
+      ) : visibleUsers.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/60 p-12 text-center">
+          <UserIcon className="mx-auto h-6 w-6 text-slate-300" />
+          <p className="mt-3 text-sm text-slate-500">
+            {searchQuery ? "No users match this filter." : "No users found."}
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-slate-50/60 border-b border-slate-100">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                    User
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Role
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Status
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Joined
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleUsers.map((user) => (
+                  <UserRow
+                    key={user.id}
+                    user={user}
+                    expanded={expandedRow === user.id}
+                    onToggle={() =>
+                      setExpandedRow((prev) => (prev === user.id ? null : user.id))
+                    }
+                    onChangeRole={handleChangeRole}
+                    onToggleStatus={handleToggleStatus}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {hasMore && !searchQuery && (
+            <div className="px-4 py-3 border-t border-slate-100 flex justify-center">
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {loadingMore ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading…
+                  </>
+                ) : (
+                  "Load more"
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

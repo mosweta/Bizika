@@ -1,657 +1,417 @@
-// src/components/admin/AdminDashboard.jsx
-import { useState, useEffect, useRef } from "react";
+// src/pages/admin.jsx
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, functions } from "../firebase/config";
+import { auth, db } from "../firebase/config";
 import { signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
-import { db } from "../firebase/config";
+
 import Analytics from "./analytics";
 import UserManagement from "./usermanagement";
 import ContentLibrary from "./contentlibrary";
 import QuizManager from "./quizmanager";
 import CourseManager from "./courses";
-import AdminLearnDashboard from "./adminlearn.jsx";
+import AdminLearnDashboard from "./adminlearn";
 
-import { 
-  LayoutDashboard, 
-  BookOpen, 
-  Users, 
-  Video, 
-  FileText, 
-  BarChart,
-  LogOut,
-  Menu,
-  X,
-  Home,
-  RefreshCw,
-  Search,
-  HelpCircle,
-  Settings,
-  ChevronRight,
-  Plus,
-  Download,
-  Upload,
-  Eye,
-  MoreVertical
+import {
+  LayoutDashboard, BookOpen, Users, Video, BarChart3, FileText,
+  LogOut, Menu, X, Home, ChevronRight, MoreHorizontal,
 } from "lucide-react";
 
-export default function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState("dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [user, setUser] = useState(null);
-  const [initializing, setInitializing] = useState(false);
-  const [initResult, setInitResult] = useState(null);
-  const [initError, setInitError] = useState(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
-  const sidebarRef = useRef(null);
-  const searchInputRef = useRef(null);
-  const navigate = useNavigate();
+// ─────────────────────────────────────────────────────────────
+// Nav config — single source of truth
+// ─────────────────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "courses",   label: "Learning",  icon: BookOpen },
+  { id: "users",     label: "Users",     icon: Users },
+  { id: "content",   label: "Content",   icon: Video },
+  { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "quizzes",   label: "Quizzes",   icon: FileText },
+];
 
-  // Detect mobile/tablet
-  useEffect(() => {
-    const checkMobile = () => {
-      const mobile = window.innerWidth < 1024;
-      setIsMobile(mobile);
-      if (!mobile) {
-        // Desktop: always show sidebar
-        setSidebarOpen(true);
-        setShowSearch(false);
-      } else {
-        // Mobile: hide sidebar by default
-        setSidebarOpen(false);
-      }
-    };
+const MOBILE_PRIMARY = NAV_ITEMS.slice(0, 4);
+const MOBILE_MORE    = NAV_ITEMS.slice(4);
 
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+// ─────────────────────────────────────────────────────────────
+// Sidebar
+// ─────────────────────────────────────────────────────────────
+function Sidebar({
+  activeTab, setActiveTab,
+  onHome, onLogout,
+  collapsed, setCollapsed,
+  isMobile, open, setOpen,
+}) {
+  const isTablet = !isMobile && collapsed; // icon-rail
+  const isDrawer = isMobile;
 
-  // Close sidebar when clicking outside on mobile
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (isMobile && 
-          sidebarOpen && 
-          sidebarRef.current && 
-          !sidebarRef.current.contains(event.target) && 
-          !event.target.closest('#sidebar-toggle') &&
-          !event.target.closest('#mobile-nav-more')) {
-        setSidebarOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('touchstart', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('touchstart', handleClickOutside);
-    };
-  }, [sidebarOpen, isMobile]);
-
-  // Focus search input when opened
-  useEffect(() => {
-    if (showSearch && searchInputRef.current) {
-      setTimeout(() => searchInputRef.current.focus(), 100);
-    }
-  }, [showSearch]);
-
-  // Handle keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Close sidebar with Escape
-      if (e.key === 'Escape') {
-        if (sidebarOpen && isMobile) {
-          setSidebarOpen(false);
-        }
-        if (showSearch) {
-          setShowSearch(false);
-        }
-      }
-      // Search shortcut (Cmd/Ctrl + K)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setShowSearch(true);
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [sidebarOpen, showSearch, isMobile]);
-
-  // Prevent body scroll when mobile sidebar is open
-  useEffect(() => {
-    if (isMobile && sidebarOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'unset';
-    }
-    return () => {
-      document.body.style.overflow = 'unset';
-    };
-  }, [isMobile, sidebarOpen]);
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
-      if (!currentUser) {
-        navigate("/login");
-        return;
-      }
-
-      const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-
-      if (!userDoc.exists() || userDoc.data().role !== "admin") {
-        navigate("/login");
-        return;
-      }
-
-      setUser(currentUser);
-    });
-
-    return () => unsubscribe();
-  }, [navigate]);
-
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      navigate("/login");
-    } catch (error) {
-      console.error("Logout error:", error);
-      alert("Logout failed. Please try again.");
-    }
-  };
-
-  // Search function
-  const handleSearch = (e) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      alert(`Searching for: ${searchQuery}`);
-      console.log("Search query:", searchQuery);
-      setSearchQuery("");
-      setShowSearch(false);
-    }
-  };
-
-  // Initialize enrollment counts function
-  const initializeAllCounts = async () => {
-    try {
-      setInitializing(true);
-      setInitError(null);
-      setInitResult(null);
-      
-      const initializeCounts = httpsCallable(functions, 'initializeAllEnrollmentCounts');
-      const result = await initializeCounts();
-      
-      setInitResult(result.data);
-      console.log('✅ Initialization successful:', result.data);
-      
-      setTimeout(() => setInitResult(null), 5000);
-      
-    } catch (error) {
-      console.error('❌ Initialization failed:', error);
-      setInitError(error.message || "Failed to initialize counts");
-      setTimeout(() => setInitError(null), 5000);
-    } finally {
-      setInitializing(false);
-    }
-  };
-
-  const menuItems = [
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, badge: null },
-    { id: "courses", label: "Learning", icon: BookOpen, badge: null },
-    { id: "users", label: "User Management", icon: Users, badge: null },
-    { id: "content", label: "Content Library", icon: Video, badge: null },
-    { id: "analytics", label: "Analytics", icon: BarChart, badge: null },
-    { id: "quizzes", label: "Quiz Manager", icon: FileText, badge: null },
-  ];
-
-  const renderContent = () => {
-    switch (activeTab) {
-      case "dashboard":
-        return <CourseManager />;
-      case "courses":
-        return <AdminLearnDashboard />;
-      case "users":
-        return <UserManagement />;
-      case "analytics":
-        return <Analytics />;
-      case "content":
-        return <ContentLibrary />;
-      case "quizzes":
-        return <QuizManager />;
-      default:
-        return <CourseManager />;
-    }
-  };
+  const widthClass = isDrawer ? "w-64" : isTablet ? "w-16" : "w-64";
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Mobile Search Overlay */}
-      {showSearch && isMobile && (
-        <div className="fixed inset-0 z-50 bg-white">
-          <div className="flex items-center h-16 px-4 border-b border-gray-200">
-            <form onSubmit={handleSearch} className="flex-1 flex items-center">
-              <button
-                type="button"
-                onClick={() => setShowSearch(false)}
-                className="p-2 mr-2"
-                aria-label="Close search"
-              >
-                <X size={24} />
-              </button>
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search admin panel..."
-                className="flex-1 border-none outline-none text-lg"
-                autoComplete="off"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery("")}
-                  className="p-2 text-gray-400"
-                  aria-label="Clear search"
-                >
-                  <X size={20} />
-                </button>
-              )}
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Sidebar - Desktop: static, Mobile: overlay with scroll */}
-      <aside 
-        ref={sidebarRef}
-        className={`
-          fixed lg:relative inset-y-0 left-0 z-40
-          bg-white border-r border-gray-200
-          transition-transform duration-300 ease-in-out
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-          ${sidebarOpen ? 'w-64 md:w-72' : 'lg:w-20'}
-          flex-shrink-0
-          flex flex-col
-          h-screen
-          lg:h-auto
-        `}
-      >
-        {/* Scrollable container for mobile */}
-        <div className="flex flex-col h-full">
-          {/* Sidebar Header */}
-          <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200 shrink-0">
-            <div className={`flex items-center gap-3 ${!sidebarOpen && !isMobile ? 'justify-center w-full' : ''}`}>
-              <div className="p-2 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg">
-                <BookOpen className="h-5 w-5 text-white" />
-              </div>
-              {sidebarOpen && (
-                <div>
-                  <h1 className="text-lg font-bold text-gray-900">Pavoc Admin</h1>
-                  <p className="text-xs text-gray-500">Dashboard</p>
-                </div>
-              )}
-            </div>
-            
-            {/* Mobile Close Button */}
-            {isMobile && sidebarOpen && (
-              <button
-                onClick={() => setSidebarOpen(false)}
-                className="lg:hidden p-2 hover:bg-gray-100 rounded-lg"
-                aria-label="Close sidebar"
-              >
-                <X size={20} />
-              </button>
-            )}
-          </div>
-
-          {/* User Info */}
-          <div className={`p-4 border-b border-gray-200 shrink-0 ${!sidebarOpen && !isMobile ? 'flex justify-center' : ''}`}>
-            {sidebarOpen ? (
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
-                  <span className="text-white font-semibold">
-                    {user?.email?.[0]?.toUpperCase() || "A"}
-                  </span>
-                </div>
-                <div className="min-w-0">
-                  <p className="font-medium text-gray-900 truncate">Administrator</p>
-                  <p className="text-sm text-gray-500 truncate">{user?.email}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mx-auto">
-                <span className="text-white font-semibold">
-                  {user?.email?.[0]?.toUpperCase() || "A"}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* Navigation - Scrollable on mobile */}
-          <div className="flex-1 overflow-y-auto">
-            <nav className="p-3 space-y-1">
-              {menuItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = activeTab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      setActiveTab(item.id);
-                      if (isMobile) {
-                        setSidebarOpen(false);
-                      }
-                    }}
-                    className={`
-                      w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-all
-                      ${isActive
-                        ? "bg-gradient-to-r from-blue-50 to-blue-100 text-blue-700 border border-blue-200"
-                        : "text-gray-700 hover:bg-gray-100 hover:text-gray-900"
-                      }
-                      ${!sidebarOpen && !isMobile ? 'justify-center' : ''}
-                    `}
-                    title={!sidebarOpen && !isMobile ? item.label : ''}
-                    aria-current={isActive ? "page" : undefined}
-                  >
-                    <Icon size={20} className="flex-shrink-0" />
-                    {sidebarOpen && (
-                      <>
-                        <span className="font-medium text-left flex-1 truncate">{item.label}</span>
-                        {item.badge && (
-                          <span className="px-2 py-0.5 bg-gray-200 text-gray-700 text-xs rounded-full">
-                            {item.badge}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </button>
-                );
-              })}
-            </nav>
-          </div>
-
-          {/* Action Buttons - Fixed at bottom */}
-          <div className="p-3 space-y-2 border-t border-gray-200 shrink-0">
-            {/* Refresh Button */}
-            <button
-              onClick={initializeAllCounts}
-              disabled={initializing}
-              className={`
-                w-full flex items-center justify-center gap-2 px-3 py-3 rounded-lg
-                bg-gradient-to-r from-green-50 to-emerald-50 text-green-700 
-                hover:from-green-100 hover:to-emerald-100 border border-green-200 
-                transition-all disabled:opacity-50
-                ${!sidebarOpen && !isMobile ? 'px-3' : ''}
-              `}
-              title={!sidebarOpen && !isMobile ? "Refresh Counts" : ""}
-            >
-              <RefreshCw size={18} className={initializing ? "animate-spin" : ""} />
-              {sidebarOpen && (
-                <span className="font-medium text-sm">
-                  {initializing ? "Initializing..." : "Refresh Counts"}
-                </span>
-              )}
-            </button>
-
-            {/* Status Messages */}
-            {sidebarOpen && initResult && (
-              <div className="p-2 bg-green-50 border border-green-200 rounded-lg">
-                <p className="text-xs text-green-700">
-                  ✅ {initResult.processed} courses updated
-                </p>
-              </div>
-            )}
-            
-            {sidebarOpen && initError && (
-              <div className="p-2 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-xs text-red-700">
-                  ❌ {initError}
-                </p>
-              </div>
-            )}
-
-            {/* Home Button */}
-            <button
-              onClick={() => navigate("/")}
-              className={`
-                w-full flex items-center gap-3 px-3 py-3 rounded-lg
-                text-gray-700 hover:bg-gray-100 transition-colors
-                ${!sidebarOpen && !isMobile ? 'justify-center' : ''}
-              `}
-              title={!sidebarOpen && !isMobile ? "Back to Site" : ""}
-            >
-              <Home size={20} />
-              {sidebarOpen && <span className="font-medium text-sm">Back to Site</span>}
-            </button>
-
-            {/* Logout Button */}
-            <button
-              onClick={handleLogout}
-              className={`
-                w-full flex items-center gap-3 px-3 py-3 rounded-lg
-                text-red-700 hover:bg-red-50 border border-red-100 transition-colors
-                ${!sidebarOpen && !isMobile ? 'justify-center' : ''}
-              `}
-              title={!sidebarOpen && !isMobile ? "Log Out" : ""}
-            >
-              <LogOut size={20} />
-              {sidebarOpen && <span className="font-medium text-sm">Log Out</span>}
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      {/* Mobile Sidebar Overlay */}
-      {sidebarOpen && isMobile && (
-        <div 
-          className="fixed inset-0 z-30 bg-black bg-opacity-50 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
+    <>
+      {isDrawer && open && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40"
+          onClick={() => setOpen(false)}
           aria-hidden="true"
         />
       )}
 
-      {/* Main Content Area */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Top Header */}
-        <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
-          <div className="h-16 flex items-center justify-between px-4">
-            {/* Left: Menu Button & Title */}
-            <div className="flex items-center gap-3">
-              <button
-                id="sidebar-toggle"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="p-2 hover:bg-gray-100 rounded-lg lg:hidden"
-                aria-label="Toggle menu"
-              >
-                {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
-              </button>
-              
-              <button
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="p-2 hover:bg-gray-100 rounded-lg hidden lg:block"
-                aria-label="Toggle sidebar"
-              >
-                <Menu size={24} />
-              </button>
-              
-              <div>
-                <h1 className="text-lg font-bold text-gray-900 truncate max-w-[180px] sm:max-w-none">
-                  Pavoc LMS Admin
-                </h1>
-                <p className="text-xs text-gray-500 capitalize hidden sm:block">
-                  {activeTab.replace("-", " ")}
-                </p>
-              </div>
-            </div>
-
-            {/* Center: Desktop Search */}
-            
-
-            {/* Right: Actions - UPDATED for mobile */}
-            <div className="flex items-center gap-2">
-              {/* Status Indicators */}
-              {initResult && (
-                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-lg border border-green-200">
-                  <RefreshCw size={14} />
-                  <span className="text-xs">
-                    {initResult.processed} courses updated
-                  </span>
-                </div>
-              )}
-              
-              {initError && (
-                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-700 rounded-lg border border-red-200">
-                  <span className="text-xs">❌ {initError}</span>
-                </div>
-              )}
-
-              {/* Mobile: Home Button (replaces search) */}
-              {isMobile && (
-                <button
-                  onClick={() => navigate("/")}
-                  className="p-2 hover:bg-gray-100 rounded-lg text-gray-700"
-                  title="Go to Home"
-                >
-                  <Home size={20} />
-                </button>
-              )}
-
-              {/* Mobile: Logout Button (replaces three dots) */}
-              {isMobile && (
-                <button
-                  onClick={handleLogout}
-                  className="p-2 hover:bg-red-50 rounded-lg text-red-600"
-                  title="Log Out"
-                >
-                  <LogOut size={20} />
-                </button>
-              )}
-
-              {/* Desktop: Home Button */}
-              {!isMobile && (
-                <button
-                  onClick={() => navigate("/")}
-                  className="p-2 hover:bg-gray-100 rounded-lg text-gray-700 hidden lg:flex items-center gap-2"
-                  title="Go to Home"
-                >
-                  <Home size={20} />
-                  <span className="text-sm hidden lg:inline">Home</span>
-                </button>
-              )}
-
-              {/* Desktop: User Profile */}
-              <div className="flex items-center gap-2">
-                <div className="text-right hidden sm:block">
-                  <p className="font-medium text-gray-900 text-sm">Administrator</p>
-                  <p className="text-xs text-gray-500 truncate max-w-[120px]">
-                    {user?.email}
-                  </p>
-                </div>
-                <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
-                  <span className="text-white font-semibold text-xs">
-                    {user?.email?.[0]?.toUpperCase() || "A"}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* Mobile Breadcrumb */}
-        {isMobile && (
-          <div className="lg:hidden bg-white border-b border-gray-200 px-4 py-3">
-            <div className="flex items-center gap-1 text-sm text-gray-600">
-              <span>Admin</span>
-              <ChevronRight size={14} />
-              <span className="font-medium text-gray-900 capitalize">
-                {activeTab.replace("-", " ")}
+      <aside
+        className={`
+          fixed lg:sticky top-0 left-0 z-40 h-screen
+          bg-white border-r border-slate-200
+          flex flex-col flex-shrink-0
+          transition-all duration-200
+          ${widthClass}
+          ${isDrawer
+            ? open ? "translate-x-0" : "-translate-x-full"
+            : "translate-x-0"}
+        `}
+      >
+        {/* Logo */}
+        <div className="flex items-center h-16 px-4 border-b border-slate-200 flex-shrink-0">
+          <button
+            onClick={onHome}
+            className={`flex items-center gap-2.5 ${isTablet ? "mx-auto" : ""}`}
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-800 flex-shrink-0">
+              <BookOpen className="h-4 w-4 text-white" />
+            </span>
+            {!isTablet && (
+              <span className="text-sm font-semibold tracking-tight text-slate-900">
+                Bizika LMS
               </span>
-            </div>
-          </div>
-        )}
-
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto bg-gray-50">
-          <div className="p-4 md:p-6">
-            {/* Desktop Breadcrumb */}
-            <div className="hidden lg:flex items-center gap-2 mb-6 text-sm text-gray-600">
-              <button 
-                onClick={() => setActiveTab("dashboard")}
-                className="hover:text-blue-600 cursor-pointer"
-              >
-                Admin
-              </button>
-              <ChevronRight size={14} />
-              <span className="text-gray-900 font-medium capitalize">
-                {activeTab.replace("-", " ")}
-              </span>
-            </div>
-
-            {/* Main Content */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-              {renderContent()}
-            </div>
-
-            {/* Mobile Help Section */}
-            {/* Mobile Help Section */}
-            {isMobile && (
-              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-                <div className="flex items-center gap-2 mb-2">
-                  <HelpCircle size={18} className="text-blue-600" />
-                  <h3 className="font-medium text-blue-900">Need Help?</h3>
-                </div>
-                <p className="text-sm text-blue-700 mb-3">
-                  Use the bottom navigation to quickly switch between sections.
-                </p>
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => alert("Support contact")}
-                    className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium"
-                  >
-                    
-                  </button>
-                </div>
-              </div>
             )}
+          </button>
+          {isDrawer && (
+            <button
+              onClick={() => setOpen(false)}
+              className="ml-auto p-1.5 text-slate-400 hover:text-slate-700 rounded"
+              aria-label="Close sidebar"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto py-3">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  if (isDrawer) setOpen(false);
+                }}
+                title={isTablet ? item.label : undefined}
+                className={`
+                  w-full flex items-center gap-3 px-4 py-2.5 text-sm
+                  transition-colors
+                  ${active
+                    ? "bg-blue-50 text-blue-800 font-medium"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"}
+                  ${isTablet ? "justify-center px-3" : ""}
+                `}
+              >
+                <Icon className="h-4 w-4 flex-shrink-0" />
+                {!isTablet && <span className="truncate">{item.label}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Footer actions */}
+        <div className="border-t border-slate-200 py-3 flex-shrink-0">
+          <button
+            onClick={onHome}
+            title={isTablet ? "Home" : undefined}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors ${
+              isTablet ? "justify-center px-3" : ""
+            }`}
+          >
+            <Home className="h-4 w-4 flex-shrink-0" />
+            {!isTablet && <span>Home</span>}
+          </button>
+          <button
+            onClick={onLogout}
+            title={isTablet ? "Sign out" : undefined}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors ${
+              isTablet ? "justify-center px-3" : ""
+            }`}
+          >
+            <LogOut className="h-4 w-4 flex-shrink-0" />
+            {!isTablet && <span>Sign out</span>}
+          </button>
+        </div>
+
+        {/* Desktop collapse toggle */}
+        {!isDrawer && (
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="hidden lg:flex items-center justify-center h-9 border-t border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <ChevronRight
+              className={`h-4 w-4 transition-transform ${collapsed ? "" : "rotate-180"}`}
+            />
+          </button>
+        )}
+      </aside>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Header
+// ─────────────────────────────────────────────────────────────
+function Header({ activeTab, user, onMenuClick, onLogout }) {
+  const current = NAV_ITEMS.find((n) => n.id === activeTab);
+  return (
+    <header className="sticky top-0 z-20 bg-white border-b border-slate-200">
+      <div className="flex items-center justify-between h-16 px-4 sm:px-6">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={onMenuClick}
+            className="lg:hidden p-2 -ml-2 text-slate-600 hover:bg-slate-100 rounded-lg"
+            aria-label="Open menu"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold tracking-tight text-slate-900 truncate">
+              {current?.label || "Admin"}
+            </h1>
+            <p className="text-xs text-slate-500 truncate hidden sm:block">
+              Bizika LMS Admin
+            </p>
           </div>
         </div>
-      </main>
-         
 
-      {/* Mobile Bottom Navigation */}
-      {isMobile && (
-        <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-gray-200 shadow-lg">
-          <div className="flex justify-around px-1 py-2">
-            {menuItems.slice(0, 4).map((item) => {
+        <div className="flex items-center gap-3">
+          <div className="hidden md:block text-right">
+            <div className="text-sm font-medium text-slate-900">Administrator</div>
+            <div className="text-xs text-slate-500 truncate max-w-[180px]">
+              {user?.email}
+            </div>
+          </div>
+          <div className="h-8 w-8 rounded-full bg-blue-800 flex items-center justify-center flex-shrink-0">
+            <span className="text-white text-xs font-semibold">
+              {user?.email?.[0]?.toUpperCase() || "A"}
+            </span>
+          </div>
+          <button
+            onClick={onLogout}
+            className="hidden md:flex p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            title="Sign out"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Mobile bottom nav — 4 primary + More
+// ─────────────────────────────────────────────────────────────
+function MobileBottomNav({ activeTab, setActiveTab }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreActive = MOBILE_MORE.some((n) => n.id === activeTab);
+
+  return (
+    <>
+      {moreOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-30 bg-black/30 md:hidden"
+            onClick={() => setMoreOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="fixed bottom-16 left-0 right-0 z-40 bg-white border-t border-slate-200 md:hidden">
+            {MOBILE_MORE.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const active = activeTab === item.id;
               return (
                 <button
                   key={item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className={`
-                    flex flex-col items-center py-2 px-1 flex-1 min-w-0
-                    ${isActive ? "text-blue-600" : "text-gray-500"}
-                  `}
-                  aria-current={isActive ? "page" : undefined}
+                  onClick={() => {
+                    setActiveTab(item.id);
+                    setMoreOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-5 py-3 text-sm border-b border-slate-100 last:border-0 ${
+                    active
+                      ? "bg-blue-50 text-blue-800 font-medium"
+                      : "text-slate-700 hover:bg-slate-50"
+                  }`}
                 >
-                  <Icon size={20} />
-                  <span className="text-xs mt-1 truncate w-full text-center">
-                    {item.label.split(' ')[0]}
-                  </span>
-                  {isActive && (
-                    <div className="h-1 w-1/2 bg-blue-600 rounded-full mt-1"></div>
-                  )}
+                  <Icon className="h-4 w-4" />
+                  <span>{item.label}</span>
                 </button>
               );
             })}
           </div>
-        </nav>
+        </>
       )}
+
+      <nav className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 md:hidden">
+        <div className="flex">
+          {MOBILE_PRIMARY.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`flex-1 flex flex-col items-center py-2.5 ${
+                  active ? "text-blue-800" : "text-slate-500"
+                }`}
+              >
+                <Icon className="h-5 w-5" />
+                <span className="mt-0.5 text-[10px] truncate w-full text-center">
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setMoreOpen((v) => !v)}
+            className={`flex-1 flex flex-col items-center py-2.5 ${
+              moreActive || moreOpen ? "text-blue-800" : "text-slate-500"
+            }`}
+          >
+            <MoreHorizontal className="h-5 w-5" />
+            <span className="mt-0.5 text-[10px]">More</span>
+          </button>
+        </div>
+      </nav>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────
+export default function AdminDashboard() {
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const navigate = useNavigate();
+
+  // Breakpoint tracking
+  useEffect(() => {
+    const check = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (!mobile) setSidebarOpen(false);
+    };
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  // Lock body scroll when drawer open
+  useEffect(() => {
+    document.body.style.overflow = isMobile && sidebarOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [isMobile, sidebarOpen]);
+
+  // Esc closes drawer
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape" && isMobile) setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isMobile]);
+
+  // Auth guard
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(async (u) => {
+      if (!u) return navigate("/login");
+      try {
+        const snap = await getDoc(doc(db, "users", u.uid));
+        if (!snap.exists() || snap.data().role !== "admin") {
+          return navigate("/login");
+        }
+        setUser(u);
+      } catch (e) {
+        console.error("auth check failed:", e);
+        navigate("/login");
+      } finally {
+        setLoading(false);
+      }
+    });
+    return () => unsub();
+  }, [navigate]);
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    navigate("/login");
+  };
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case "dashboard": return <CourseManager />;
+      case "courses":   return <AdminLearnDashboard />;
+      case "users":     return <UserManagement />;
+      case "analytics": return <Analytics />;
+      case "content":   return <ContentLibrary />;
+      case "quizzes":   return <QuizManager />;
+      default:          return <CourseManager />;
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <div className="h-8 w-8 rounded-full border-2 border-slate-200 border-t-blue-800 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex">
+      <Sidebar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onHome={() => navigate("/")}
+        onLogout={handleLogout}
+        collapsed={collapsed}
+        setCollapsed={setCollapsed}
+        isMobile={isMobile}
+        open={sidebarOpen}
+        setOpen={setSidebarOpen}
+      />
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <Header
+          activeTab={activeTab}
+          user={user}
+          onMenuClick={() => setSidebarOpen(true)}
+          onLogout={handleLogout}
+        />
+
+        <main className="flex-1 overflow-y-auto">
+          <div className="p-4 sm:p-6 pb-24 md:pb-6">
+            {renderContent()}
+          </div>
+        </main>
+      </div>
+
+      <MobileBottomNav
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+      />
     </div>
   );
 }

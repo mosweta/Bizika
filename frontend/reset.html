@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body style="margin:0; padding:0; font-family:'Inter', sans-serif; background-color:#f8fafc;">
+          <div style="max-width:600px; margin:0 auto; padding:40px 20px;">
+            <!-- Header -->
+            <div style="text-align:center; margin-bottom:40px;">
+              <div style="background:linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); width:64px; height:64px; border-radius:16px; margin:0 auto 20px; display:flex; align-items:center; justify-content:center;">
+                <span style="color:white; font-size:28px; font-weight:600;">P</span>
+              </div>
+              <h1 style="color:#1e293b; font-size:32px; font-weight:700; margin:0 0 10px;">Welcome to Pavoc LMS</h1>
+              <p style="color:#64748b; font-size:16px; margin:0;">Let's get your account verified</p>
+            </div>
+
+            <!-- Main Content -->
+            <div style="background:white; border-radius:20px; padding:48px; box-shadow:0 10px 25px -5px rgba(0, 0, 0, 0.1);">
+              <p style="color:#475569; font-size:18px; line-height:28px; margin:0 0 24px;">
+                Hello <strong style="color:#1e293b;">${name}</strong>,
+              </p>
+              
+              <p style="color:#475569; font-size:16px; line-height:24px; margin:0 0 32px;">
+                Thank you for choosing Pavoc LMS! To complete your registration and access all features, please verify your email address by clicking the button below.
+              </p>
+
+              <!-- CTA Button -->
+              <div style="text-align:center; margin:40px 0;">
+                <a href="${verificationLink}" style="display:inline-block; background:linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color:white; padding:16px 40px; border-radius:12px; text-decoration:none; font-weight:600; font-size:16px; box-shadow:0 4px 14px 0 rgba(37, 99, 235, 0.3); transition:all 0.3s ease;">
+                  Verify Email Address
+                </a>
+              </div>
+
+              <!-- Alternative Link -->
+              <div style="text-align:center; margin:24px 0; padding:16px; background-color:#f1f5f9; border-radius:8px;">
+                <p style="color:#64748b; font-size:14px; margin:0 0 8px;">Or copy and paste this link:</p>
+                <a href="${verificationLink}" style="color:#2563eb; font-size:14px; word-break:break-all; text-decoration:none;">
+                  ${verificationLink}
+                </a>
+              </div>
+
+              <!-- Expiration Note -->
+              <div style="margin:32px 0; padding:16px; background-color:#f0f9ff; border-radius:8px; border-left:4px solid #2563eb;">
+                <p style="color:#1e40af; font-size:14px; margin:0; display:flex; align-items:flex-start;">
+                  <span style="font-weight:600; margin-right:8px;">⏰ Note:</span>
+                  This verification link will expire in 24 hours for security reasons.
+                </p>
+              </div>
+
+              <!-- Need Help -->
+              <div style="border-top:1px solid #e2e8f0; padding-top:32px; margin-top:32px;">
+                <p style="color:#64748b; font-size:14px; margin:0;">
+                  If you have any questions or need assistance, our support team is here to help at 
+                  <a href="mailto:support@pavoclms.com" style="color:#2563eb; text-decoration:none;">support@pavoclms.com</a>
+                </p>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div style="text-align:center; margin-top:40px;">
+              <p style="color:#94a3b8; font-size:14px; margin:0 0 16px;">
+                © ${new Date().getFullYear()} Pavoc LMS. All rights reserved.
+              </p>
+              <div style="display:flex; justify-content:center; gap:24px;">
+                <a href="https://pavoc.pages.dev" style="color:#64748b; font-size:14px; text-decoration:none;">Website</a>
+                <a href="#" style="color:#64748b; font-size:14px; text-decoration:none;">Privacy Policy</a>
+                <a href="#" style="color:#64748b; font-size:14px; text-decoration:none;">Terms of Service</a>
+              </div>
+              <p style="color:#94a3b8; font-size:12px; margin:24px 0 0;">
+                This email was sent to ${email}. If you didn't create an account with Pavoc LMS, please ignore this email.
+              </p>
+            </div>
+          </div>
+</body>
+</html>

@@ -36,11 +36,10 @@ import ContactForm from './pages/contact.jsx';
 import Home from './pages/home/home.jsx';
 import AdminLearnDashboard from './pages/adminlearn.jsx';
 import CourseHome from './pages/coursehome.jsx';
-
-// In your router configuration
+import LessonPreview from "./pages/dev/LessonPreview";
+import ReadingLessonEditorPage from "./pages/ReadingLessonEditorPage";
 import ArchivedLesson from "./pages/archivedlesson.jsx";
 
-// Add this route
 
 
 
@@ -50,56 +49,6 @@ const LoadingScreen = () => (
     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
   </div>
 );
-// // Add to main.jsx or App.jsx
-// const animateFavicon = () => {
-//   const favicon = document.querySelector('link[rel="icon"]');
-//   if (!favicon) return;
-  
-//   let scale = 1;
-//   let direction = 0.05;
-  
-//   const animate = () => {
-//     // Create a canvas to manipulate favicon
-//     const canvas = document.createElement('canvas');
-//     canvas.width = 32;
-//     canvas.height = 32;
-//     const ctx = canvas.getContext('2d');
-    
-//     // Draw logo with scale effect
-//     const img = new Image();
-//     img.src = '/logo.png';
-//     img.onload = () => {
-//       ctx.clearRect(0, 0, 32, 32);
-//       ctx.save();
-//       ctx.translate(16, 16);
-//       ctx.scale(scale, scale);
-//       ctx.drawImage(img, -16, -16, 32, 32);
-//       ctx.restore();
-      
-//       // Update favicon
-//       favicon.href = canvas.toDataURL('image/png');
-//     };
-    
-//     // Update scale for next frame
-//     scale += direction;
-//     if (scale > 1.2 || scale < 0.8) direction *= -1;
-    
-//     requestAnimationFrame(animate);
-//   };
-  
-//   // Run for 3 seconds
-//   animate();
-//   setTimeout(() => {
-//     // Reset to original favicon
-//     favicon.href = '/logo.png';
-//   }, 3000);
-// };
-
-// // Call when app loads
-// animateFavicon();
-
-
-
 
 
 // Private Route wrapper
@@ -157,7 +106,9 @@ function App() {
       <Routes>
         {/* Public routes */}
         <Route path="/" element={<Home />} />
-        
+        {import.meta.env.DEV && (
+  <Route path="/dev/lesson-preview" element={<LessonPreview />} />
+)}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/terms" element={<TermsConditions />} />
@@ -197,7 +148,14 @@ function App() {
           </PrivateRoute>
         } />
 
-        
+        <Route
+  path="/admin/lesson/:courseId/:lessonId/edit"
+  element={
+    <PrivateRoute allowedRoles={['admin']}>
+      <ReadingLessonEditorPage />
+    </PrivateRoute>
+  }
+/>
 
 
           <Route path="/course/:courseId" element={

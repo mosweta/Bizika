@@ -1,528 +1,369 @@
-import { useState, useEffect } from "react";
+// src/pages/analytics.jsx
+import { useState, useEffect, useCallback } from "react";
 import { db } from "../firebase/config";
-import { 
-  collection, 
-  query, 
-  where, 
-  getDocs,
-  getDoc,
-  doc,
-  getCountFromServer,
-  orderBy,
-  limit,
-  Timestamp,
-  startAfter,
-  endBefore
-} from "firebase/firestore";
 import {
-  BarChart3,
-  TrendingUp,
-  Users,
-  BookOpen,
-  Clock,
-  Award,
-  Eye,
-  Calendar,
-  DollarSign,
-  CheckCircle
-} from "lucide-react";
+  collection, query, where, orderBy, limit, getDocs,
+  getCountFromServer, Timestamp,
+} from "firebase/firestore";
+import { SkeletonStatRow, SkeletonChart, SkeletonBar } from "../components/Skeletons";
 
-export default function Analytics() {
-  const [loading, setLoading] = useState(true);
-  const [timeRange, setTimeRange] = useState("all"); // "7d", "30d", "90d", "all"
-  const [stats, setStats] = useState({
-    totalCourses: 0,
-    publishedCourses: 0,
-    totalUsers: 0,
-    totalEnrollments: 0,
-    completionRate: 0,
-    averageWatchTime: "0h",
-    revenue: 0,
-    activeUsers: 0,
-    totalLessons: 0,
-    completedLessons: 0
-  });
+const RANGE_OPTIONS = [
+  { id: "7d", label: "Last 7 days", days: 7 },
+  { id: "30d", label: "Last 30 days", days: 30 },
+  { id: "90d", label: "Last 90 days", days: 90 },
+  { id: "all", label: "All time", days: null },
+];
 
-  const [chartData, setChartData] = useState({
-    enrollments: [],
-    users: [],
-    revenue: []
-  });
-
-  const [topCourses, setTopCourses] = useState([]);
-  const [recentActivity, setRecentActivity] = useState([]);
-  const [userGrowth, setUserGrowth] = useState([]);
-  const [enrollmentTrends, setEnrollmentTrends] = useState([]);
-
-  useEffect(() => {
-    fetchAnalytics();
-  }, [timeRange]);
-
-  const getDateRange = () => {
-    const now = new Date();
-    let startDate = new Date();
-    
-    switch(timeRange) {
-      case "7d":
-        startDate.setDate(now.getDate() - 7);
-        break;
-      case "30d":
-        startDate.setDate(now.getDate() - 30);
-        break;
-      case "90d":
-        startDate.setDate(now.getDate() - 90);
-        break;
-      default:
-        startDate = null; // All time
-    }
-    
-    return { startDate, endDate: now };
-  };
-
-  const fetchAnalytics = async () => {
-    try {
-      setLoading(true);
-      const { startDate } = getDateRange();
-
-      // Fetch all data in parallel for better performance
-      const [
-        coursesCount,
-        usersCount,
-        enrollmentsCount,
-        enrollmentsData,
-        usersData,
-        allCourses,
-        enrollmentsQuery
-      ] = await Promise.all([
-        getCountFromServer(collection(db, "courses")),
-        getCountFromServer(collection(db, "users")),
-        getCountFromServer(collection(db, "enrollments")),
-        getDocs(collection(db, "enrollments")),
-        getDocs(collection(db, "users")),
-        getDocs(collection(db, "courses")),
-        getDocs(query(collection(db, "enrollments"), orderBy("enrolledAt", "desc")))
-      ]);
-
-      // Get published courses
-      const publishedQuery = query(collection(db, "courses"), where("published", "==", true));
-      const publishedSnapshot = await getDocs(publishedQuery);
-
-      // Calculate real completion rate
-      let totalCompletedLessons = 0;
-      let totalLessonsInCourses = 0;
-      
-      const enrollments = enrollmentsData.docs;
-      enrollments.forEach(enrollment => {
-        const data = enrollment.data();
-        totalCompletedLessons += (data.completedLessons || []).length;
-      });
-
-      // Calculate total lessons across all courses
-      for (const courseDoc of allCourses.docs) {
-        const lessonsRef = collection(db, "courses", courseDoc.id, "lessons");
-        const lessonsSnap = await getCountFromServer(lessonsRef);
-        totalLessonsInCourses += lessonsSnap.data().count * enrollments.length;
-      }
-
-      const completionRate = totalLessonsInCourses > 0 
-        ? Math.round((totalCompletedLessons / totalLessonsInCourses) * 100)
-        : 0;
-
-      // Calculate active users (users with enrollments in last 30 days)
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      
-      const activeUsersQuery = query(
-        collection(db, "enrollments"),
-        where("lastAccessed", ">=", Timestamp.fromDate(thirtyDaysAgo))
-      );
-      const activeUsersSnap = await getDocs(activeUsersQuery);
-      const activeUserIds = new Set(activeUsersSnap.docs.map(doc => doc.data().userId));
-      
-      // Get top enrolled courses with real data
-      const coursesWithEnrollments = await Promise.all(
-        allCourses.docs.map(async (docSnap) => {
-          const enrollmentsRef = collection(db, "enrollments");
-          const enrollmentsQuery = query(enrollmentsRef, where("courseId", "==", docSnap.id));
-          const enrollmentsSnap = await getCountFromServer(enrollmentsQuery);
-          
-          return {
-            id: docSnap.id,
-            ...docSnap.data(),
-            enrollments: enrollmentsSnap.data().count
-          };
-        })
-      );
-
-      // Sort by enrollments
-      const sortedCourses = coursesWithEnrollments
-        .filter(course => course.enrollments > 0)
-        .sort((a, b) => b.enrollments - a.enrollments)
-        .slice(0, 5);
-
-      // Calculate total revenue from paid courses
-      let totalRevenue = 0;
-      const paidCourses = allCourses.docs.filter(doc => {
-        const data = doc.data();
-        return !data.isFree && data.price > 0;
-      });
-
-      for (const courseDoc of paidCourses) {
-        const courseId = courseDoc.id;
-        const courseData = courseDoc.data();
-        
-        const courseEnrollmentsQuery = query(
-          collection(db, "enrollments"),
-          where("courseId", "==", courseId)
-        );
-        const courseEnrollmentsSnap = await getDocs(courseEnrollmentsQuery);
-        
-        totalRevenue += courseEnrollmentsSnap.size * (courseData.price || 0);
-      }
-
-      // Generate real chart data from enrollments
-      const enrollmentsByDay = {};
-      const usersByDay = {};
-      
-      const now = new Date();
-      const daysToShow = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : timeRange === "90d" ? 90 : 30;
-      
-      // Initialize days
-      for (let i = daysToShow - 1; i >= 0; i--) {
-        const date = new Date(now);
-        date.setDate(date.getDate() - i);
-        const dateKey = date.toISOString().split('T')[0];
-        enrollmentsByDay[dateKey] = 0;
-        usersByDay[dateKey] = new Set();
-      }
-
-      // Process enrollments
-      enrollmentsQuery.docs.forEach(doc => {
-        const data = doc.data();
-        const enrolledAt = data.enrolledAt?.toDate();
-        
-        if (enrolledAt) {
-          const dateKey = enrolledAt.toISOString().split('T')[0];
-          if (enrollmentsByDay.hasOwnProperty(dateKey)) {
-            enrollmentsByDay[dateKey]++;
-            usersByDay[dateKey].add(data.userId);
-          }
-        }
-      });
-
-      // Convert to chart data format
-      const enrollmentChartData = Object.entries(enrollmentsByDay).map(([date, count]) => ({
-        day: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        count
-      }));
-
-      const userChartData = Object.entries(usersByDay).map(([date, userSet]) => ({
-        day: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        count: userSet.size
-      }));
-
-      // Generate real recent activity
-      const recentEnrollments = await getDocs(
-        query(collection(db, "enrollments"), orderBy("enrolledAt", "desc"), limit(10))
-      );
-
-      const activity = [];
-      for (const enrollmentDoc of recentEnrollments.docs) {
-        const enrollmentData = enrollmentDoc.data();
-        
-        // Get user details
-        const userDoc = await getDoc(doc(db, "users", enrollmentData.userId));
-        const userData = userDoc.exists() ? userDoc.data() : null;
-        
-        // Get course details
-        const courseDoc = await getDoc(doc(db, "courses", enrollmentData.courseId));
-        const courseData = courseDoc.exists() ? courseDoc.data() : null;
-        
-        if (userData && courseData) {
-          activity.push({
-            type: "enrollment",
-            user: userData.fullName || userData.email || "User",
-            course: courseData.title,
-            time: enrollmentData.enrolledAt?.toDate().toLocaleString() || "Recently"
-          });
-        }
-      }
-
-      // Calculate average watch time (mock for now - would need tracking)
-      // You'd need to add a field to track watch time per lesson
-      const averageWatchTime = "25m"; // Placeholder
-
-      // Set all stats with real data
-      setStats({
-        totalCourses: coursesCount.data().count,
-        publishedCourses: publishedSnapshot.size,
-        totalUsers: usersCount.data().count,
-        totalEnrollments: enrollmentsCount.data().count,
-        completionRate,
-        averageWatchTime,
-        revenue: totalRevenue,
-        activeUsers: activeUserIds.size,
-        totalLessons: totalLessonsInCourses,
-        completedLessons: totalCompletedLessons
-      });
-
-      setTopCourses(sortedCourses);
-      setRecentActivity(activity);
-      
-      setChartData({
-        enrollments: enrollmentChartData,
-        users: userChartData,
-        revenue: [] // You'd need payment data for this
-      });
-
-    } catch (error) {
-      console.error("Error fetching analytics:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getActivityIcon = (type) => {
-    switch(type) {
-      case "enrollment": return <BookOpen size={16} className="text-blue-600" />;
-      case "completion": return <Award size={16} className="text-green-600" />;
-      case "registration": return <Users size={16} className="text-purple-600" />;
-      case "course_published": return <Eye size={16} className="text-orange-600" />;
-      default: return <Calendar size={16} className="text-gray-600" />;
-    }
-  };
-
-  const StatCard = ({ title, value, icon: Icon, change, color, description }) => (
-    <div className="bg-white rounded-xl p-6 shadow border hover:shadow-md transition-shadow">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-gray-600">{title}</p>
-          <p className="text-2xl font-bold text-gray-900 mt-2">{value}</p>
-          {description && (
-            <p className="text-xs text-gray-500 mt-1">{description}</p>
-          )}
-        </div>
-        <div className={`p-3 rounded-lg ${color}`}>
-          <Icon className="h-6 w-6 text-white" />
-        </div>
+// ─────────────────────────────────────────────────────────────
+// Stat tile
+// ─────────────────────────────────────────────────────────────
+function Stat({ label, value, sublabel }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        {label}
       </div>
+      <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
+      {sublabel && <div className="mt-1 text-xs text-slate-400">{sublabel}</div>}
     </div>
   );
+}
 
-  if (loading) {
+// ─────────────────────────────────────────────────────────────
+// Enrollment trend — bar chart drawn in divs, no library
+// ─────────────────────────────────────────────────────────────
+function EnrollmentTrend({ data, rangeLabel }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-6">
+      <div className="flex items-baseline justify-between mb-6">
+        <div>
+          <h3 className="text-base font-semibold text-slate-900">Enrollment trend</h3>
+          <p className="mt-0.5 text-xs text-slate-500">{rangeLabel}</p>
+        </div>
+        <span className="text-xs text-slate-400">
+          Peak: {max.toLocaleString()} {max === 1 ? "enrollment" : "enrollments"}
+        </span>
+      </div>
+
+      {data.length === 0 ? (
+        <div className="h-40 flex items-center justify-center text-sm text-slate-400">
+          No enrollment data for this period.
+        </div>
+      ) : (
+        <div className="flex items-end gap-1 h-40">
+          {data.map((d, i) => {
+            const heightPct = max > 0 ? (d.count / max) * 100 : 0;
+            return (
+              <div key={i} className="flex-1 flex flex-col items-center group relative">
+                <div
+                  className="w-full rounded-t bg-blue-800 hover:bg-blue-900 transition-colors"
+                  style={{ height: `${Math.max(heightPct, 2)}%`, minHeight: 2 }}
+                />
+                <div className="absolute -top-7 hidden group-hover:block bg-slate-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-10">
+                  {d.label}: {d.count}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {data.length > 0 && (
+        <div className="mt-3 flex justify-between text-xs text-slate-400">
+          <span>{data[0].label}</span>
+          <span>{data[data.length - 1].label}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Top courses
+// ─────────────────────────────────────────────────────────────
+function TopCourses({ courses }) {
+  if (courses.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <div className="rounded-lg border border-slate-200 bg-white p-6">
+        <h3 className="text-base font-semibold text-slate-900">Top courses</h3>
+        <p className="mt-6 text-sm text-slate-400 text-center">
+          No enrollment data yet.
+        </p>
       </div>
     );
   }
 
   return (
+    <div className="rounded-lg border border-slate-200 bg-white p-6">
+      <h3 className="text-base font-semibold text-slate-900">Top courses</h3>
+      <p className="mt-0.5 text-xs text-slate-500">By enrollment count</p>
+
+      <ul className="mt-5 space-y-3">
+        {courses.map((course, i) => (
+          <li key={course.id} className="flex items-center gap-3">
+            <span className="w-6 text-sm text-slate-400 tabular-nums flex-shrink-0">
+              {i + 1}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-slate-900 truncate">{course.title}</div>
+              {course.category && (
+                <div className="text-xs text-slate-400 capitalize truncate">
+                  {course.category}
+                </div>
+              )}
+            </div>
+            <span className="text-sm font-medium text-slate-700 tabular-nums flex-shrink-0">
+              {course.enrollmentCount.toLocaleString()}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────
+export default function Analytics() {
+  const [range, setRange] = useState("30d");
+  const [stats, setStats] = useState(null);
+  const [trend, setTrend] = useState(null);
+  const [topCourses, setTopCourses] = useState(null);
+
+  const loadStats = useCallback(async (rangeId) => {
+    try {
+      const option = RANGE_OPTIONS.find((o) => o.id === rangeId);
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now);
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      const [totalUsers, totalEnrollments, activeUsers, completed] = await Promise.all([
+        getCountFromServer(collection(db, "users")),
+        getCountFromServer(collection(db, "enrollments")),
+        getCountFromServer(
+          query(
+            collection(db, "enrollments"),
+            where("lastAccessed", ">=", Timestamp.fromDate(thirtyDaysAgo))
+          )
+        ),
+        getCountFromServer(
+          query(collection(db, "enrollments"), where("progress", "==", 100))
+        ),
+      ]);
+
+      const total = totalEnrollments.data().count;
+      const completedCount = completed.data().count;
+      const completionRate = total > 0 ? Math.round((completedCount / total) * 100) : 0;
+
+      setStats({
+        totalUsers: totalUsers.data().count,
+        totalEnrollments: total,
+        activeUsers: activeUsers.data().count,
+        completionRate,
+        completedCount,
+      });
+    } catch (e) {
+      console.error("loadStats error:", e);
+      setStats({
+        totalUsers: 0,
+        totalEnrollments: 0,
+        activeUsers: 0,
+        completionRate: 0,
+        completedCount: 0,
+      });
+    }
+  }, []);
+
+  const loadTrend = useCallback(async (rangeId) => {
+    try {
+      const option = RANGE_OPTIONS.find((o) => o.id === rangeId);
+      const days = option?.days || 30;
+
+      const now = new Date();
+      const start = new Date(now);
+      start.setDate(start.getDate() - days);
+
+      const snap = await getDocs(
+        query(
+          collection(db, "enrollments"),
+          where("enrolledAt", ">=", Timestamp.fromDate(start)),
+          orderBy("enrolledAt", "asc")
+        )
+      );
+
+      // Bucket by day
+      const buckets = new Map();
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        buckets.set(key, 0);
+      }
+
+      snap.docs.forEach((d) => {
+        const enrolled = d.data().enrolledAt?.toDate?.();
+        if (!enrolled) return;
+        const key = enrolled.toISOString().slice(0, 10);
+        if (buckets.has(key)) buckets.set(key, buckets.get(key) + 1);
+      });
+
+      // If period is long, group by week to keep the chart readable
+      const entries = Array.from(buckets.entries());
+      const points =
+        days > 45
+          ? // weekly buckets
+            entries.reduce((acc, [key, count], i) => {
+              if (i % 7 === 0) acc.push({ label: formatShort(key), count: 0, _key: key });
+              if (acc.length) acc[acc.length - 1].count += count;
+              return acc;
+            }, [])
+          : entries.map(([key, count]) => ({ label: formatShort(key), count }));
+
+      setTrend(points);
+    } catch (e) {
+      console.error("loadTrend error:", e);
+      setTrend([]);
+    }
+  }, []);
+
+  const loadTopCourses = useCallback(async () => {
+    try {
+      // Try fast path — courses that already carry enrollmentCount
+      const fast = await getDocs(
+        query(collection(db, "courses"), orderBy("enrollmentCount", "desc"), limit(10))
+      );
+
+      if (fast.docs.some((d) => (d.data().enrollmentCount || 0) > 0)) {
+        setTopCourses(
+          fast.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((c) => (c.enrollmentCount || 0) > 0)
+            .slice(0, 5)
+        );
+        return;
+      }
+
+      // Fallback: count top 10 courses in parallel
+      const top = await getDocs(
+        query(collection(db, "courses"), orderBy("createdAt", "desc"), limit(10))
+      );
+      const withCounts = await Promise.all(
+        top.docs.map(async (d) => {
+          const count = await getCountFromServer(
+            query(collection(db, "enrollments"), where("courseId", "==", d.id))
+          );
+          return {
+            id: d.id,
+            title: d.data().title,
+            category: d.data().category,
+            enrollmentCount: count.data().count,
+          };
+        })
+      );
+      setTopCourses(
+        withCounts
+          .filter((c) => c.enrollmentCount > 0)
+          .sort((a, b) => b.enrollmentCount - a.enrollmentCount)
+          .slice(0, 5)
+      );
+    } catch (e) {
+      console.error("loadTopCourses error:", e);
+      setTopCourses([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    setStats(null);
+    setTrend(null);
+    Promise.all([loadStats(range), loadTrend(range)]);
+  }, [range, loadStats, loadTrend]);
+
+  useEffect(() => {
+    loadTopCourses();
+  }, [loadTopCourses]);
+
+  const rangeLabel = RANGE_OPTIONS.find((o) => o.id === range)?.label || "";
+
+  return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">Platform Analytics</h3>
-          <p className="text-sm text-gray-600">Real-time data from your platform</p>
+          <h1 className="text-lg font-semibold text-slate-900">Analytics</h1>
+          <p className="mt-0.5 text-sm text-slate-500">Platform metrics</p>
         </div>
-        <div className="flex gap-2">
-          <select
-            value={timeRange}
-            onChange={(e) => setTimeRange(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-            <option value="90d">Last 90 days</option>
-            <option value="all">All Time</option>
-          </select>
-          <button
-            onClick={fetchAnalytics}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            Refresh
-          </button>
+
+        <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+          {RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => setRange(opt.id)}
+              className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                range === opt.id
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              {opt.id === "all" ? "All" : opt.label.replace("Last ", "")}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard
-          title="Total Users"
-          value={stats.totalUsers.toLocaleString()}
-          icon={Users}
-          color="bg-blue-500"
-          description={`${stats.activeUsers} active users`}
-        />
-        <StatCard
-          title="Total Enrollments"
-          value={stats.totalEnrollments.toLocaleString()}
-          icon={BookOpen}
-          color="bg-green-500"
-          description="Across all courses"
-        />
-        <StatCard
-          title="Completion Rate"
-          value={`${stats.completionRate}%`}
-          icon={Award}
-          color="bg-purple-500"
-          description={`${stats.completedLessons}/${stats.totalLessons} lessons`}
-        />
-        
-      </div>
+      {/* Stats */}
+      {!stats ? (
+        <SkeletonStatRow count={4} />
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Stat label="Total users" value={stats.totalUsers.toLocaleString()} />
+          <Stat label="Enrollments" value={stats.totalEnrollments.toLocaleString()} />
+          <Stat
+            label="Completion rate"
+            value={`${stats.completionRate}%`}
+            sublabel={`${stats.completedCount.toLocaleString()} completed`}
+          />
+          <Stat
+            label="Active users"
+            value={stats.activeUsers.toLocaleString()}
+            sublabel="Last 30 days"
+          />
+        </div>
+      )}
 
-      {/* Charts and Top Courses */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Enrollments Chart */}
-        <div className="bg-white rounded-xl p-6 shadow border">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h4 className="font-semibold text-gray-900">Enrollment Trends</h4>
-              <p className="text-sm text-gray-600">{timeRange === "all" ? "Last 30 days" : `Last ${timeRange}`}</p>
+      {/* Trend + Top courses */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          {!trend ? <SkeletonChart /> : <EnrollmentTrend data={trend} rangeLabel={rangeLabel} />}
+        </div>
+        <div>
+          {!topCourses ? (
+            <div className="rounded-lg border border-slate-200 bg-white p-6">
+              <SkeletonBar className="h-4 w-32" />
+              <div className="mt-5 space-y-3">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="flex items-center gap-3">
+                    <SkeletonBar className="h-3 w-4" />
+                    <SkeletonBar className="h-3 flex-1" />
+                    <SkeletonBar className="h-3 w-10" />
+                  </div>
+                ))}
+              </div>
             </div>
-            <BarChart3 className="text-blue-600" />
-          </div>
-          <div className="space-y-4">
-            {chartData.enrollments.length > 0 ? (
-              chartData.enrollments.map((item, index) => (
-                <div key={index} className="flex items-center">
-                  <div className="w-20 text-sm text-gray-600">{item.day}</div>
-                  <div className="flex-1 ml-4">
-                    <div className="flex items-center">
-                      <div 
-                        className="h-6 bg-gradient-to-r from-blue-500 to-blue-600 rounded"
-                        style={{ 
-                          width: `${Math.min((item.count / Math.max(...chartData.enrollments.map(d => d.count))) * 100, 100)}%` 
-                        }}
-                      />
-                      <span className="ml-3 text-sm font-medium text-gray-900">{item.count}</span>
-                    </div>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-8 text-gray-500">
-                No enrollment data for this period
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Top Courses */}
-        <div className="bg-white rounded-xl p-6 shadow border">
-          <div className="flex items-center justify-between mb-6">
-            <h4 className="font-semibold text-gray-900">Top Performing Courses</h4>
-            <TrendingUp className="text-green-600" />
-          </div>
-          <div className="space-y-4">
-            {topCourses.length > 0 ? (
-              topCourses.map((course, index) => (
-                <div key={course.id} className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg transition-colors">
-                  <div className="flex items-center">
-                    <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
-                      index === 0 ? 'bg-yellow-100 text-yellow-800' :
-                      index === 1 ? 'bg-gray-100 text-gray-800' :
-                      index === 2 ? 'bg-orange-100 text-orange-800' :
-                      'bg-blue-100 text-blue-800'
-                    }`}>
-                      <span className="font-bold">#{index + 1}</span>
-                    </div>
-                    <div className="ml-3">
-                      <div className="font-medium text-gray-900 truncate max-w-xs">
-                        {course.title}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-gray-500">
-                        <span className="capitalize">{course.category}</span>
-                        <span>•</span>
-                        <span>{course.enrollments} enrollments</span>
-                        {course.isFree && <span className="text-green-600">FREE</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-sm font-medium text-gray-900">
-                    {course.enrollments.toLocaleString()}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-8 text-gray-500">
-                No enrollment data yet
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Recent Activity */}
-      <div className="bg-white rounded-xl p-6 shadow border">
-        <div className="flex items-center justify-between mb-6">
-          <h4 className="font-semibold text-gray-900">Recent Activity</h4>
-          <Calendar className="text-gray-600" />
-        </div>
-        <div className="space-y-4">
-          {recentActivity.length > 0 ? (
-            recentActivity.map((activity, index) => (
-              <div key={index} className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg transition-colors">
-                <div className="flex items-center">
-                  <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center">
-                    {getActivityIcon(activity.type)}
-                  </div>
-                  <div className="ml-3">
-                    <div className="font-medium text-gray-900">
-                      <span className="font-semibold">{activity.user}</span>
-                      <span className="font-normal text-gray-600 ml-2">
-                        {activity.type === "enrollment" && `enrolled in`}
-                        <span className="font-medium text-gray-900 ml-1">{activity.course}</span>
-                      </span>
-                    </div>
-                    <div className="text-xs text-gray-500">{activity.time}</div>
-                  </div>
-                </div>
-              </div>
-            ))
           ) : (
-            <div className="text-center py-8 text-gray-500">
-              No recent activity
-            </div>
+            <TopCourses courses={topCourses} />
           )}
-        </div>
-      </div>
-
-      {/* Platform Overview */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl p-4 shadow border text-center">
-          <div className="text-xl font-bold text-gray-900">{stats.publishedCourses}</div>
-          <div className="text-sm text-gray-600 mt-1">Published Courses</div>
-          <div className="text-xs text-gray-500 mt-2">
-            {stats.totalCourses - stats.publishedCourses} in draft
-          </div>
-        </div>
-        <div className="bg-white rounded-xl p-4 shadow border text-center">
-          <div className="text-xl font-bold text-green-600">{stats.activeUsers}</div>
-          <div className="text-sm text-gray-600 mt-1">Active Users</div>
-          <div className="text-xs text-gray-500 mt-2">
-            Last 30 days
-          </div>
-        </div>
-        <div className="bg-white rounded-xl p-4 shadow border text-center">
-          <div className="text-xl font-bold text-blue-600">
-            {stats.totalUsers > 0 
-              ? (stats.totalEnrollments / stats.totalUsers).toFixed(1)
-              : "0.0"}
-          </div>
-          <div className="text-sm text-gray-600 mt-1">Avg. Courses per User</div>
-          <div className="text-xs text-gray-500 mt-2">
-            Engagement rate
-          </div>
-        </div>
-        <div className="bg-white rounded-xl p-4 shadow border text-center">
-          <div className="text-xl font-bold text-purple-600">{stats.averageWatchTime}</div>
-          <div className="text-sm text-gray-600 mt-1">Avg. Watch Time</div>
-          <div className="text-xs text-gray-500 mt-2">
-            Per lesson
-          </div>
         </div>
       </div>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Small helper
+// ─────────────────────────────────────────────────────────────
+function formatShort(isoDate) {
+  const d = new Date(isoDate);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }

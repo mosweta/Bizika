@@ -1,552 +1,423 @@
-import React, { useState, useRef, useEffect } from "react";
+// src/pages/contact.jsx
+import { useState, useRef, useEffect } from "react";
+import { Link } from "react-router-dom";
 import ReCAPTCHA from "react-google-recaptcha";
 import Swal from "sweetalert2";
-import Footer from '../pages/home/footer.jsx';
-import { 
-  Send, 
-  MapPin, 
-  Phone, 
-  Mail, 
-  Globe, 
-  Clock,
-  MessageSquare,
-  User,
-  BookOpen,
-  AlertCircle
+import {
+  Send, MapPin, Phone, Mail, Clock, User, AlertCircle, CheckCircle,
 } from "lucide-react";
+import Footer from "./home/footer.jsx";
 
+const WORKER_URL =
+  import.meta.env.VITE_R2_WORKER_URL || "http://localhost:8787";
+const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
-const ContactForm = () => {
-  const [form, setForm] = useState({ 
-    name: "", 
-    email: "", 
+const SUBJECTS = [
+  "General Inquiry",
+  "Technical Support",
+  "Course Enrollment",
+  "Account Issues",
+  "Other",
+];
+
+export default function ContactForm() {
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
     subject: "",
-    message: "" 
+    message: "",
   });
   const [loading, setLoading] = useState(false);
   const [captchaValue, setCaptchaValue] = useState(null);
-  const [recaptchaError, setRecaptchaError] = useState(false);
-  const [rateLimitInfo, setRateLimitInfo] = useState(null); // NEW
-  const recaptchaRef = useRef();
+  const [captchaError, setCaptchaError] = useState(!RECAPTCHA_SITE_KEY);
+  const [rateLimit, setRateLimit] = useState(null);
+  const recaptchaRef = useRef(null);
 
-  // Get the reCAPTCHA site key
-  const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY || "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI";
-  
-  // Check if reCAPTCHA key is loaded
+  // Clear rate limit hint when the user edits the form
   useEffect(() => {
-    if (!RECAPTCHA_SITE_KEY) {
-      console.error("❌ reCAPTCHA site key is missing!");
-      console.log("Environment variables loaded:", import.meta.env);
-      setRecaptchaError(true);
-    } else {
-      console.log("✅ reCAPTCHA site key loaded:", RECAPTCHA_SITE_KEY.substring(0, 10) + "...");
-    }
-  }, []);
-
-  // Clear rate limit info when form changes
-  useEffect(() => {
-    if (rateLimitInfo) {
-      setRateLimitInfo(null);
-    }
+    if (rateLimit) setRateLimit(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form]);
-  // Auto-refresh when rate limit resets
-useEffect(() => {
-  if (rateLimitInfo?.exceeded && rateLimitInfo.reset) {
-    const now = new Date();
-    const resetTime = new Date(rateLimitInfo.reset);
-    const timeUntilReset = resetTime - now;
-    
-    if (timeUntilReset > 0) {
-      const timer = setTimeout(() => {
-        setRateLimitInfo(null);
-        Swal.fire({
-          icon: 'info',
-          title: 'Rate Limit Reset',
-          text: 'You can now submit messages again.',
-          toast: true,
-          position: 'top-end',
-          showConfirmButton: false,
-          timer: 3000,
-          timerProgressBar: true,
-        });
-      }, timeUntilReset);
-      
-      return () => clearTimeout(timer);
-    }
-  }
-}, [rateLimitInfo]);
 
-  // Check if reCAPTCHA key is loaded
-  useEffect(() => {
-    if (!RECAPTCHA_SITE_KEY) {
-      console.error("❌ reCAPTCHA site key is missing!");
-      console.log("Environment variables loaded:", import.meta.env);
-      setRecaptchaError(true);
-    } else {
-      console.log("✅ reCAPTCHA site key loaded:", RECAPTCHA_SITE_KEY.substring(0, 10) + "...");
-    }
-  }, []);
+  const handleChange = (e) =>
+    setForm((p) => ({ ...p, [e.target.name]: e.target.value }));
 
-  
-  // Handle form input changes
-  const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
+  const handleSubmit = async (e) => {
+    e.preventDefault();
 
-// Format time remaining
-const formatTimeRemaining = (resetTime) => {
-  const now = new Date();
-  const diffMs = resetTime - now;
-  const diffMins = Math.ceil(diffMs / (1000 * 60));
-  const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
-  
-  if (diffMins < 60) {
-    return `${diffMins} minute${diffMins !== 1 ? 's' : ''}`;
-  } else {
-    return `${diffHours} hour${diffHours !== 1 ? 's' : ''}`;
-  }
-};
-
-// Calculate usage percentage
-const calculateUsage = (remaining) => {
-  const used = 10 - remaining;
-  return {
-    percentage: (used / 10) * 100,
-    used,
-    total: 10
-  };
-};
-    const handleSubmit = async (e) => {
-  e.preventDefault();
-
-  if (!captchaValue) {
-    Swal.fire({
-      icon: "warning",
-      title: "Verification Required",
-      text: "Please complete the reCAPTCHA verification.",
-      confirmButtonColor: "#3b82f6",
-    });
-    return;
-  }
-
-  setLoading(true);
-  setRateLimitInfo(null); // Clear previous rate limit info
-
-  try {
-    // Point to your Cloudflare Worker
-    const WORKER_URL = import.meta.env.VITE_R2_WORKER_URL || 'http://localhost:8787';
-    
-    const res = await fetch(`${WORKER_URL}/api/contact`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json" 
-      },
-      body: JSON.stringify({ 
-        ...form, 
-        token: captchaValue 
-      }),
-    });
-
-    const data = await res.json();
-
-    if (res.ok) {
-      // Success - check for rate limit info in response headers
-      const remaining = res.headers.get('X-RateLimit-Remaining');
-      const reset = res.headers.get('X-RateLimit-Reset');
-      
-      if (remaining && reset) {
-        const resetTime = new Date(parseInt(reset));
-        const now = new Date();
-        const hoursLeft = Math.ceil((resetTime - now) / (1000 * 60 * 60));
-        
-        // Store rate limit info
-        setRateLimitInfo({
-          remaining: parseInt(remaining),
-          reset: resetTime,
-          hoursLeft
-        });
-      }
-      
-      Swal.fire({
-        icon: "success",
-        title: "Message Sent Successfully!",
-        html: `
-          <div class="text-left">
-            <p class="mb-3">${data.message || "Thank you for contacting Pavoc LMS."}</p>
-            ${remaining ? `
-              <div class="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                <p class="text-sm text-blue-800">
-                  <strong>Note:</strong> You have <span class="font-bold">${remaining}</span> message${remaining !== 1 ? 's' : ''} remaining this hour.
-                </p>
-              </div>
-            ` : ''}
-          </div>
-        `,
-        confirmButtonColor: "#10b981",
-        showConfirmButton: true,
-      });
-      
-      setForm({ name: "", email: "", subject: "", message: "" });
-      recaptchaRef.current?.reset();
-      setCaptchaValue(null);
-      
-    } else if (res.status === 429) {
-      // Rate limit exceeded
-      const reset = res.headers.get('X-RateLimit-Reset');
-      const retryAfter = res.headers.get('Retry-After');
-      
-      let waitTime = "a while";
-      if (retryAfter) {
-        const minutes = Math.ceil(parseInt(retryAfter) / 60);
-        waitTime = minutes > 60 
-          ? `${Math.ceil(minutes / 60)} hours` 
-          : `${minutes} minutes`;
-      } else if (reset) {
-        const resetTime = new Date(parseInt(reset));
-        const now = new Date();
-        const minutes = Math.ceil((resetTime - now) / (1000 * 60));
-        waitTime = minutes > 60 
-          ? `${Math.ceil(minutes / 60)} hours` 
-          : `${minutes} minutes`;
-      }
-      
-      setRateLimitInfo({
-        exceeded: true,
-        message: data.message || "Too many submissions",
-        waitTime,
-        reset: reset ? new Date(parseInt(reset)) : null
-      });
-      
+    if (!captchaValue && RECAPTCHA_SITE_KEY) {
       Swal.fire({
         icon: "warning",
-        title: "Maximum Submissions Reached",
-        html: `
-          <div class="text-left">
-            <p class="mb-3">${data.message || "You've reached the maximum number of submissions."}</p>
-            <div class="mt-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-              <p class="text-sm text-yellow-800">
-                <strong>Please try again in ${waitTime}.</strong>
-              </p>
-              <p class="text-xs text-yellow-700 mt-2">
-                You can submit up to 10 messages per hour.
-              </p>
-            </div>
-          </div>
-        `,
-        confirmButtonColor: "#f59e0b",
+        title: "Verification required",
+        text: "Please complete the reCAPTCHA.",
+        confirmButtonColor: "#1E40AF",
       });
-      
-    } else {
-      // Other errors
+      return;
+    }
+
+    setLoading(true);
+    setRateLimit(null);
+
+    try {
+      const res = await fetch(`${WORKER_URL}/api/contact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, token: captchaValue }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        const remaining = res.headers.get("X-RateLimit-Remaining");
+        const resetHeader = res.headers.get("X-RateLimit-Reset");
+
+        if (remaining && resetHeader) {
+          setRateLimit({
+            remaining: parseInt(remaining, 10),
+            reset: new Date(parseInt(resetHeader, 10)),
+          });
+        }
+
+        Swal.fire({
+          icon: "success",
+          title: "Message sent",
+          text:
+            data.message ||
+            "Thanks for reaching out. We'll be in touch within 24 hours.",
+          confirmButtonColor: "#1E40AF",
+        });
+
+        setForm({ name: "", email: "", subject: "", message: "" });
+        recaptchaRef.current?.reset();
+        setCaptchaValue(null);
+      } else if (res.status === 429) {
+        const retryAfter = res.headers.get("Retry-After");
+        const minutes = retryAfter ? Math.ceil(parseInt(retryAfter, 10) / 60) : null;
+
+        setRateLimit({ exceeded: true });
+
+        Swal.fire({
+          icon: "warning",
+          title: "Too many submissions",
+          html: `
+            <p class="text-sm text-slate-600">
+              You've reached the maximum of 10 messages per hour.
+              ${minutes ? `Try again in about ${minutes} minutes.` : "Please try again later."}
+            </p>
+          `,
+          confirmButtonColor: "#1E40AF",
+        });
+      } else {
+        Swal.fire({
+          icon: "error",
+          title: "Couldn't send",
+          text: data.error || "Something went wrong. Please try again.",
+          confirmButtonColor: "#1E40AF",
+        });
+      }
+    } catch (err) {
+      console.error("Contact form error:", err);
       Swal.fire({
         icon: "error",
-        title: "Submission Failed",
-        text: data.error || "Something went wrong. Please try again.",
-        confirmButtonColor: "#ef4444",
+        title: "Network error",
+        text: "Unable to reach the server. Please check your connection.",
+        confirmButtonColor: "#1E40AF",
       });
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    console.error('Contact form error:', err);
-    Swal.fire({
-      icon: "error",
-      title: "Network Error",
-      text: "Unable to connect to the server. Please check your internet connection.",
-      confirmButtonColor: "#ef4444",
-    });
-  } finally {
-    setLoading(false);
-  }
-};
-  const subjects = [
-    "General Inquiry",
-    "Technical Support",
-    "Course Enrollment",
-    "Account Issues",
-    "Other"
-  ];
+  };
+
+  const isBlocked = Boolean(rateLimit?.exceeded);
+  const canSubmit =
+    !loading &&
+    !isBlocked &&
+    (!RECAPTCHA_SITE_KEY || captchaValue) &&
+    form.name.trim() &&
+    form.email.trim() &&
+    form.subject &&
+    form.message.trim();
 
   return (
     <>
-    
-
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto">
-          {/* Header */}
-          <div className="text-center mb-12">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full mb-4">
-              <MessageSquare className="h-8 w-8 text-white" />
-            </div>
-            <h1 className="text-4xl font-bold text-gray-900 mb-3">Contact us</h1>
-            <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-              Have questions about our learning platform? Our support team is here to help you succeed in your educational journey.
+      <div className="min-h-screen bg-slate-50">
+        {/* Header */}
+        <section className="bg-blue-800 text-white">
+          <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-12">
+            <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+              Contact us
+            </h1>
+            <p className="mt-3 text-base text-blue-100 max-w-2xl">
+              Have a question about a course, your account, or something else?
+              We typically respond within 4 hours during business hours.
             </p>
           </div>
+        </section>
 
-          <div className="grid lg:grid-cols-2 gap-8">
-            {/* Left Side - Contact Information */}
-            <div className="space-y-6">
-              {/* ... (keep your left side content exactly as is) ... */}
-            </div>
-
-            {/* Right Side - Contact Form */}
-            <div className="bg-white rounded-2xl shadow-xl p-8 justify-center">
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-2">Send us a Message</h2>
-                <p className="text-gray-600">
-                  Fill out the form below and we'll get back to you as soon as possible.
+        {/* Content */}
+        <section className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-10">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+            {/* Left: contact info */}
+            <aside className="lg:col-span-1 space-y-6">
+              <div className="rounded-lg border border-slate-200 bg-white p-6">
+                <h2 className="text-base font-semibold text-slate-900">
+                  Get in touch
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Reach us directly, or send a message using the form.
                 </p>
+
+                <ul className="mt-6 space-y-4 text-sm">
+                  <li className="flex items-start gap-3">
+                    <Mail className="h-4 w-4 mt-0.5 text-blue-800 flex-shrink-0" />
+                    <div>
+                      <div className="font-medium text-slate-900">Email</div>
+                      <a
+                        href="mailto:support@pavoclms.com"
+                        className="text-blue-800 hover:underline"
+                      >
+                        support@pavoclms.com
+                      </a>
+                    </div>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <Phone className="h-4 w-4 mt-0.5 text-blue-800 flex-shrink-0" />
+                    <div>
+                      <div className="font-medium text-slate-900">Phone</div>
+                      <div className="text-slate-600">+254 700 000 000</div>
+                    </div>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <MapPin className="h-4 w-4 mt-0.5 text-blue-800 flex-shrink-0" />
+                    <div>
+                      <div className="font-medium text-slate-900">Location</div>
+                      <div className="text-slate-600">Nairobi, Kenya</div>
+                    </div>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <Clock className="h-4 w-4 mt-0.5 text-blue-800 flex-shrink-0" />
+                    <div>
+                      <div className="font-medium text-slate-900">Hours</div>
+                      <div className="text-slate-600">
+                        Mon–Fri, 9:00–17:00 EAT
+                      </div>
+                    </div>
+                  </li>
+                </ul>
               </div>
 
-              {/* reCAPTCHA Error Alert */}
-              {recaptchaError && (
-                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-                  <div className="flex items-center gap-2 text-red-800">
-                    <AlertCircle className="h-5 w-5" />
+              <div className="rounded-lg border border-slate-200 bg-white p-6 text-sm">
+                <h3 className="text-base font-semibold text-slate-900">
+                  Before you write
+                </h3>
+                <ul className="mt-3 space-y-2 text-slate-600">
+                  <li>
+                    •{" "}
+                    <Link to="/courses" className="text-blue-800 hover:underline">
+                      Browse the catalog
+                    </Link>{" "}
+                    — most questions about a specific course are answered there.
+                  </li>
+                  <li>
+                    •{" "}
+                    <Link
+                      to="/forgot-password"
+                      className="text-blue-800 hover:underline"
+                    >
+                      Reset your password
+                    </Link>{" "}
+                    if you can't sign in.
+                  </li>
+                </ul>
+              </div>
+            </aside>
+
+            {/* Right: form */}
+            <div className="lg:col-span-2">
+              <div className="rounded-lg border border-slate-200 bg-white p-6 sm:p-8">
+                <h2 className="text-lg font-semibold text-slate-900">
+                  Send us a message
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  All fields are required.
+                </p>
+
+                {captchaError && (
+                  <div className="mt-6 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
                     <div>
-                      <p className="font-medium">reCAPTCHA Configuration Error</p>
-                      <p className="text-sm mt-1">
-                        The contact form requires reCAPTCHA to prevent spam. 
-                        Please email us directly at <strong>support@pavoclms.com</strong>
+                      <p className="font-medium">Verification unavailable</p>
+                      <p className="mt-0.5 text-amber-700">
+                        reCAPTCHA isn't configured. Email us directly at{" "}
+                        <span className="font-medium">support@pavoclms.com</span>.
                       </p>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              <form onSubmit={handleSubmit} className="space-y-6">
-                {/* Name */}
-                <div>
-                  <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
-                    <div className="flex items-center gap-2">
-                      <User className="h-4 w-4 text-gray-400" />
-                      Full Name *
+                {isBlocked && (
+                  <div className="mt-6 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="font-medium">Too many submissions</p>
+                      <p className="mt-0.5 text-amber-700">
+                        Please wait before sending another message.
+                      </p>
                     </div>
-                  </label>
-                  <input
-                    type="text"
-                    id="name"
-                    name="name"
-                    value={form.name}
-                    onChange={handleChange}
-                    placeholder="Enter your full name"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-base"
-                    required
-                    disabled={rateLimitInfo?.exceeded || loading} // Added disabled state
-                    />
-                </div>
+                  </div>
+                )}
 
-                {/* Email */}
-                <div>
-                  <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-                    <div className="flex items-center gap-2">
-                      <Mail className="h-4 w-4 text-gray-400" />
-                      Email Address *
-                    </div>
-                  </label>
-                  <input
-                    type="email"
-                    id="email"
-                    name="email"
-                    value={form.email}
-                    onChange={handleChange}
-                    placeholder="you@example.com"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-base"
-                    required
-                  />
-                </div>
+                {rateLimit && !rateLimit.exceeded && (
+                  <div className="mt-6 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle className="h-3.5 w-3.5 text-green-700" />
+                      {rateLimit.remaining}{" "}
+                      {rateLimit.remaining === 1 ? "message" : "messages"} left
+                      this hour
+                    </span>
+                    <span className="text-slate-400">
+                      Resets{" "}
+                      {rateLimit.reset.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                )}
 
-                {/* Subject */}
-                <div>
-                  <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-2">
-                    Subject *
-                  </label>
-                  <select
-                    id="subject"
-                    name="subject"
-                    value={form.subject}
-                    onChange={handleChange}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-base bg-white"
-                    required
-                  >
-                    <option value="">Select a subject</option>
-                    {subjects.map((subject) => (
-                      <option key={subject} value={subject}>
-                        {subject}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Message */}
-                <div>
-                  <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-2">
-                    Your Message *
-                  </label>
-                  <textarea
-                    id="message"
-                    name="message"
-                    value={form.message}
-                    onChange={handleChange}
-                    placeholder="Please provide details about your inquiry..."
-                    rows={6}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition text-base resize-none"
-                    required
-                  />
-                </div>
-
-                {/* reCAPTCHA - Only show if key exists */}
-                {RECAPTCHA_SITE_KEY ? (
+                <form onSubmit={handleSubmit} className="mt-8 space-y-5">
                   <div>
+                    <label
+                      htmlFor="name"
+                      className="block text-sm font-medium text-slate-700 mb-1.5"
+                    >
+                      Full name
+                    </label>
+                    <input
+                      id="name"
+                      name="name"
+                      type="text"
+                      required
+                      value={form.name}
+                      onChange={handleChange}
+                      disabled={loading || isBlocked}
+                      placeholder="Jane Doe"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:outline-none focus:border-blue-800 disabled:bg-slate-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="email"
+                      className="block text-sm font-medium text-slate-700 mb-1.5"
+                    >
+                      Email
+                    </label>
+                    <input
+                      id="email"
+                      name="email"
+                      type="email"
+                      required
+                      value={form.email}
+                      onChange={handleChange}
+                      disabled={loading || isBlocked}
+                      placeholder="you@example.com"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:outline-none focus:border-blue-800 disabled:bg-slate-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="subject"
+                      className="block text-sm font-medium text-slate-700 mb-1.5"
+                    >
+                      Subject
+                    </label>
+                    <select
+                      id="subject"
+                      name="subject"
+                      required
+                      value={form.subject}
+                      onChange={handleChange}
+                      disabled={loading || isBlocked}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:border-blue-800 disabled:bg-slate-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="">Choose a subject</option>
+                      {SUBJECTS.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="message"
+                      className="block text-sm font-medium text-slate-700 mb-1.5"
+                    >
+                      Message
+                    </label>
+                    <textarea
+                      id="message"
+                      name="message"
+                      required
+                      rows={6}
+                      value={form.message}
+                      onChange={handleChange}
+                      disabled={loading || isBlocked}
+                      placeholder="Tell us what's on your mind…"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:outline-none focus:border-blue-800 disabled:bg-slate-50 disabled:cursor-not-allowed resize-y"
+                    />
+                  </div>
+
+                  {RECAPTCHA_SITE_KEY && !captchaError && (
                     <ReCAPTCHA
                       ref={recaptchaRef}
                       sitekey={RECAPTCHA_SITE_KEY}
-                      onChange={(val) => setCaptchaValue(val)}
-                      onErrored={() => {
-                        console.error("reCAPTCHA error occurred");
-                        setRecaptchaError(true);
-                      }}
-                      className="mx-auto"
+                      onChange={setCaptchaValue}
+                      onErrored={() => setCaptchaError(true)}
                     />
-                  </div>
-                ) : (
-                  <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <p className="text-yellow-800 text-sm text-center">
-                      <AlertCircle className="inline h-4 w-4 mr-1" />
-                      reCAPTCHA is not configured. Form submission may be limited.
+                  )}
+
+                  <div className="pt-2">
+                    <button
+                      type="submit"
+                      disabled={!canSubmit}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-800 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {loading ? (
+                        <>
+                          <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                          Sending…
+                        </>
+                      ) : (
+                        <>
+                          <Send className="h-4 w-4" />
+                          Send message
+                        </>
+                      )}
+                    </button>
+                    <p className="mt-3 text-xs text-slate-500">
+                      By submitting, you agree to our{" "}
+                      <Link to="/privacy" className="text-blue-800 hover:underline">
+                        Privacy Policy
+                      </Link>{" "}
+                      and{" "}
+                      <Link to="/terms" className="text-blue-800 hover:underline">
+                        Terms
+                      </Link>
+                      .
                     </p>
                   </div>
-                )}
-{/* Rate Limit Status */}
-{rateLimitInfo && !rateLimitInfo.exceeded && (
-  <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <div className={`h-8 w-8 rounded-full flex items-center justify-center ${
-          rateLimitInfo.remaining <= 3 ? 'bg-yellow-100 text-yellow-800' :
-          rateLimitInfo.remaining <= 1 ? 'bg-red-100 text-red-800' :
-          'bg-green-100 text-green-800'
-        }`}>
-          <span className="font-bold">{rateLimitInfo.remaining}</span>
-        </div>
-        <div>
-          <p className="text-sm font-medium text-gray-900">Messages remaining this hour</p>
-          <p className="text-xs text-gray-600">
-            Resets at {rateLimitInfo.reset.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </p>
-        </div>
-      </div>
-      {rateLimitInfo.remaining <= 3 && (
-        <span className={`px-2 py-1 text-xs rounded-full ${
-          rateLimitInfo.remaining === 1 ? 'bg-red-100 text-red-800' :
-          'bg-yellow-100 text-yellow-800'
-        }`}>
-          {rateLimitInfo.remaining === 1 ? 'Last message!' : 'Low limit'}
-        </span>
-      )}
-    </div>
-    
-    {/* Progress bar */}
-    <div className="mt-3">
-      <div className="flex justify-between text-xs text-gray-600 mb-1">
-        <span>Usage</span>
-        <span>{10 - rateLimitInfo.remaining}/10</span>
-      </div>
-      <div className="w-full bg-gray-200 rounded-full h-2">
-        <div 
-          className={`h-2 rounded-full transition-all duration-300 ${
-            rateLimitInfo.remaining <= 3 ? 'bg-yellow-500' :
-            rateLimitInfo.remaining <= 1 ? 'bg-red-500' :
-            'bg-green-500'
-          }`}
-          style={{ width: `${((10 - rateLimitInfo.remaining) / 10) * 100}%` }}
-        ></div>
-      </div>
-    </div>
-  </div>
-)}
-
-                        {/* Rate Limit Exceeded Warning */}
-                        {rateLimitInfo?.exceeded && (
-                        <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                            <div className="flex items-start gap-3">
-                            <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />
-                            <div>
-                                <p className="font-medium text-yellow-800">Maximum Submissions Reached</p>
-                                <p className="text-sm text-yellow-700 mt-1">
-                                {rateLimitInfo.message || "You've reached the maximum of 10 messages per hour."}
-                                </p>
-                                {rateLimitInfo.reset && (
-                                <p className="text-xs text-yellow-600 mt-2">
-                                    <strong>Next reset:</strong> {rateLimitInfo.reset.toLocaleTimeString()} ({rateLimitInfo.waitTime})
-                                </p>
-                                )}
-                            </div>
-                            </div>
-                        </div>
-                        )}
-                {/* Submit Button */}
-                <div>
-                  <button
-                    type="submit"
-                    disabled={
-                        loading || 
-                        (!captchaValue && RECAPTCHA_SITE_KEY) || 
-                        rateLimitInfo?.exceeded
-                    }
-                    className={`w-full font-semibold py-3 px-6 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
-                        rateLimitInfo?.exceeded
-                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 focus:ring-4 focus:ring-blue-200'
-                    }`}
-                    >
-                    {loading ? (
-                        <>
-                        <div className="h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                        Sending Message...
-                        </>
-                    ) : rateLimitInfo?.exceeded ? (
-                        <>
-                        <AlertCircle className="h-5 w-5" />
-                        Rate Limited
-                        </>
-                    ) : (
-                        <>
-                        <Send className="h-5 w-5" />
-                        Send Message
-                        </>
-                    )}
-                    </button>
-                  <p className="text-sm text-gray-500 mt-3 text-center">
-                    By submitting this form, you agree to our{" "}
-                    <a href="/privacy" className="text-blue-600 hover:text-blue-800">
-                      Privacy Policy
-                    </a>{" "}
-                    and{" "}
-                    <a href="/terms" className="text-blue-600 hover:text-blue-800">
-                      Terms of Service
-                    </a>
-                  </p>
-                </div>
-              </form>
-
-              {/* Response Time */}
-              <div className="mt-8 pt-6 border-t border-gray-200">
-                <div className="flex items-center justify-center gap-2 text-gray-600">
-                  <Clock className="h-5 w-5 text-blue-500" />
-                  <span className="text-sm">
-                    Average response time: <strong>4 hours</strong> during business hours
-                  </span>
-                </div>
+                </form>
               </div>
             </div>
           </div>
-
-          {/* ... (keep your additional info section exactly as is) ... */}
-        </div>
+        </section>
       </div>
+
       <Footer />
     </>
   );
-};
-
-export default ContactForm;
+}

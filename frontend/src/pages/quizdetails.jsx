@@ -1,441 +1,515 @@
-// src/components/admin/QuizDetails.jsx
+// src/pages/quizdetails.jsx
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { 
-  ArrowLeft, 
-  User, 
-  Mail, 
-  Calendar, 
-  Clock, 
-  Eye,
-  EyeOff,
-  Award, 
-  CheckCircle,
-  XCircle
+import {
+  doc, getDoc, collection, query, where, getDocs,
+} from "firebase/firestore";
+import {
+  ArrowLeft, User, Mail, Calendar, Clock,
+  CheckCircle, XCircle, Loader2, AlertCircle,
 } from "lucide-react";
+import { SkeletonBar, SkeletonCircle } from "../components/Skeletons";
 
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+function formatDate(value) {
+  if (!value) return "—";
+  const d = value.toDate ? value.toDate() : new Date(value);
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatTime(seconds) {
+  if (typeof seconds !== "number" || seconds < 0) return "—";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Stat tile
+// ─────────────────────────────────────────────────────────────
+function StatTile({ label, value, accent, sublabel }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className={`mt-2 text-2xl font-semibold ${accent || "text-slate-900"}`}>
+        {value}
+      </div>
+      {sublabel && <div className="mt-1 text-xs text-slate-400">{sublabel}</div>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Question breakdown
+// ─────────────────────────────────────────────────────────────
+function QuestionCard({ question, index, studentAnswer }) {
+  const isCorrect = studentAnswer === question.correctAnswer;
+  const points = question.points || 1;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+      <div className="flex items-start gap-3 px-4 py-3 border-b border-slate-100">
+        <div
+          className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium flex-shrink-0 ${
+            isCorrect
+              ? "bg-green-50 text-green-700"
+              : "bg-red-50 text-red-700"
+          }`}
+        >
+          {index + 1}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-slate-900">{question.text}</p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {isCorrect ? (
+            <CheckCircle className="h-4 w-4 text-green-600" />
+          ) : (
+            <XCircle className="h-4 w-4 text-red-600" />
+          )}
+          <span className="text-xs text-slate-500 tabular-nums">
+            {isCorrect ? points : 0}/{points}
+          </span>
+        </div>
+      </div>
+
+      <div className="p-3 space-y-2">
+        {question.options.map((option, oIndex) => {
+          const isCorrectOption = oIndex === question.correctAnswer;
+          const isStudentOption = oIndex === studentAnswer;
+          const state = isCorrectOption
+            ? "correct"
+            : isStudentOption
+            ? "wrong"
+            : "neutral";
+
+          const rowCls = {
+            correct: "border-green-200 bg-green-50/50",
+            wrong: "border-red-200 bg-red-50/50",
+            neutral: "border-slate-200",
+          }[state];
+
+          const bubbleCls = {
+            correct: "bg-green-600 text-white",
+            wrong: "bg-red-600 text-white",
+            neutral: "bg-slate-100 text-slate-600",
+          }[state];
+
+          return (
+            <div
+              key={oIndex}
+              className={`flex items-center gap-3 rounded-lg border p-2.5 ${rowCls}`}
+            >
+              <div
+                className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium flex-shrink-0 ${bubbleCls}`}
+              >
+                {String.fromCharCode(65 + oIndex)}
+              </div>
+              <span
+                className={`flex-1 text-sm ${
+                  isCorrectOption
+                    ? "text-green-900"
+                    : isStudentOption
+                    ? "text-red-900"
+                    : "text-slate-700"
+                }`}
+              >
+                {option}
+              </span>
+              {isCorrectOption && (
+                <span className="text-xs text-green-700 font-medium flex-shrink-0">
+                  Correct
+                </span>
+              )}
+              {!isCorrectOption && isStudentOption && (
+                <span className="text-xs text-red-700 font-medium flex-shrink-0">
+                  Student's answer
+                </span>
+              )}
+            </div>
+          );
+        })}
+
+        {question.explanation && (
+          <div className="mt-3 pt-3 border-t border-slate-100 text-sm text-slate-600 leading-relaxed">
+            <span className="font-medium text-slate-700">Explanation: </span>
+            {question.explanation}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Skeleton
+// ─────────────────────────────────────────────────────────────
+function PageSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <SkeletonCircle className="h-8 w-8" />
+        <div className="flex-1">
+          <SkeletonBar className="h-4 w-48" />
+          <SkeletonBar className="mt-2 h-3 w-64" />
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white p-5">
+        <div className="flex items-center gap-4">
+          <SkeletonCircle className="h-12 w-12" />
+          <div className="flex-1 space-y-2">
+            <SkeletonBar className="h-4 w-40" />
+            <SkeletonBar className="h-3 w-56" />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="rounded-lg border border-slate-200 bg-white p-5">
+            <SkeletonBar className="h-3 w-24" />
+            <SkeletonBar className="mt-3 h-7 w-16" />
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100">
+          <SkeletonBar className="h-4 w-40" />
+        </div>
+        <div className="p-5 space-y-3">
+          {[...Array(4)].map((_, i) => (
+            <SkeletonBar key={i} className="h-12 w-full" />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────
 export default function QuizDetails() {
   const { courseId, userId } = useParams();
   const navigate = useNavigate();
-  const [quizResult, setQuizResult] = useState(null);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
   const [user, setUser] = useState(null);
   const [course, setCourse] = useState(null);
   const [quiz, setQuiz] = useState(null);
-  const [allAttempts, setAllAttempts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [hideSensitiveData, setHideSensitiveData] = useState(false);
+  const [attempts, setAttempts] = useState([]);
+  const [selectedAttemptId, setSelectedAttemptId] = useState(null);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+
+    async function load() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        // Fetch everything in parallel
+        const [userDoc, courseDoc, quizDoc, resultsSnap] = await Promise.all([
+          getDoc(doc(db, "users", userId)),
+          getDoc(doc(db, "courses", courseId)),
+          getDoc(doc(db, "courses", courseId, "quizzes", "main")),
+          getDocs(
+            query(
+              collection(db, "courses", courseId, "quizResults"),
+              where("userId", "==", userId)
+            )
+          ),
+        ]);
+
+        if (cancelled) return;
+
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          setUser({
+            id: userDoc.id,
+            ...data,
+            name: data.fullName || data.email?.split("@")[0] || "Unknown",
+          });
+        }
+
+        if (courseDoc.exists()) {
+          setCourse({ id: courseDoc.id, ...courseDoc.data() });
+        }
+
+        if (quizDoc.exists()) {
+          setQuiz({ id: quizDoc.id, ...quizDoc.data() });
+        }
+
+        const attemptList = resultsSnap.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => {
+            const at = a.submittedAt?.toDate?.()?.getTime() || 0;
+            const bt = b.submittedAt?.toDate?.()?.getTime() || 0;
+            return bt - at;
+          });
+
+        setAttempts(attemptList);
+        if (attemptList.length > 0) {
+          setSelectedAttemptId(attemptList[0].id);
+        }
+      } catch (e) {
+        console.error("quizDetails load error:", e);
+        if (!cancelled) setError("Couldn't load quiz details.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, [courseId, userId]);
 
-  const fetchData = async () => {
-    try {
-      // Fetch user data
-      const userDoc = await getDoc(doc(db, "users", userId));
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        setUser({ 
-          id: userDoc.id,
-          ...userData,
-          name: userData.fullName || userData.email.split('@')[0]
-        });
+  // ── Derived ──────────────────────────────────────────────
+  const selectedAttempt = attempts.find((a) => a.id === selectedAttemptId);
+  const scores = attempts.map((a) => a.score || 0);
+  const stats = attempts.length
+    ? {
+        latest: attempts[0].score || 0,
+        highest: Math.max(...scores),
+        average: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length),
+        passedCount: attempts.filter((a) => a.isPassed).length,
       }
+    : null;
 
-      // Fetch course data
-      const courseDoc = await getDoc(doc(db, "courses", courseId));
-      if (courseDoc.exists()) {
-        setCourse({ id: courseDoc.id, ...courseDoc.data() });
-      }
-
-      // Fetch quiz data
-      const quizDoc = await getDoc(doc(db, "courses", courseId, "quizzes", "main"));
-      if (quizDoc.exists()) {
-        setQuiz({ id: quizDoc.id, ...quizDoc.data() });
-      }
-
-      // Fetch all quiz attempts for this user
-      const quizResultsRef = collection(db, "courses", courseId, "quizResults");
-      const quizQuery = query(
-        quizResultsRef,
-        where("userId", "==", userId)
-      );
-      const quizSnap = await getDocs(quizQuery);
-      
-      const attempts = quizSnap.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })).sort((a, b) => b.submittedAt?.toDate() - a.submittedAt?.toDate());
-      
-      setAllAttempts(attempts);
-      setQuizResult(attempts[0]); // Latest attempt
-
-    } catch (error) {
-      console.error("Error fetching quiz details:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const formatDate = (timestamp) => {
-    if (!timestamp) return "N/A";
-    const date = timestamp.toDate();
-    return date.toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  };
-
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}m ${secs}s`;
-  };
-
-  const calculateStats = () => {
-    if (allAttempts.length === 0) return {};
-    
-    const scores = allAttempts.map(attempt => attempt.score);
-    const average = scores.reduce((a, b) => a + b, 0) / scores.length;
-    const highest = Math.max(...scores);
-    const lowest = Math.min(...scores);
-    const passedCount = allAttempts.filter(a => a.isPassed).length;
-    
-    return {
-      average: Math.round(average),
-      highest: highest,
-      lowest: lowest,
-      passedCount: passedCount,
-      totalAttempts: allAttempts.length,
-      passRate: Math.round((passedCount / allAttempts.length) * 100)
-    };
-  };
-
-  const stats = calculateStats();
+  // ── Render ───────────────────────────────────────────────
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <div className="space-y-6">
+        <button
+          onClick={() => navigate(-1)}
+          className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </button>
+        <PageSkeleton />
       </div>
     );
   }
 
-  if (!quizResult) {
+  if (error || !user || !quiz) {
     return (
-      <div className="text-center py-12">
-        <Award className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-        <h3 className="text-lg font-semibold text-gray-900 mb-2">No Quiz Attempts Found</h3>
-        <p className="text-gray-600 mb-6">This student hasn't taken the quiz yet.</p>
+      <div className="space-y-6">
         <button
-          onClick={() => navigate("/admin/quizzes")}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          onClick={() => navigate(-1)}
+          className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
         >
-          Back to Quizzes
+          <ArrowLeft className="h-4 w-4" />
+          Back
         </button>
+        <div className="rounded-lg border border-slate-200 bg-white p-12 text-center">
+          <AlertCircle className="mx-auto h-6 w-6 text-slate-400" />
+          <p className="mt-3 text-sm text-slate-500">
+            {error || "No quiz attempts found for this student."}
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Header - SIMPLIFIED WITHOUT EXPORT */}
-      <div className="bg-white rounded-xl shadow border p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate("/admin/quizzes")}
-              className="p-2 hover:bg-gray-100 rounded-lg"
-            >
-              <ArrowLeft size={20} />
-            </button>
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">Quiz Details</h2>
-              <div className="flex flex-wrap items-center gap-2 text-gray-600">
-                <span>{course?.title}</span>
-                <span>•</span>
-                <span>{user?.fullName || user?.email}</span>
-              </div>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            {/* Sensitive Data Toggle Only */}
-            <button
-              onClick={() => setHideSensitiveData(!hideSensitiveData)}
-              className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center gap-2"
-              title={hideSensitiveData ? "Show all data" : "Hide sensitive data"}
-            >
-              {hideSensitiveData ? <EyeOff size={16} /> : <Eye size={16} />}
-              {hideSensitiveData ? "Show All" : "Hide Sensitive"}
-            </button>
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <button
+            onClick={() => navigate(-1)}
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded flex-shrink-0 mt-0.5"
+            title="Back"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-slate-900 truncate">
+              Quiz details
+            </h1>
+            <p className="mt-0.5 text-sm text-slate-500 truncate">
+              {course?.title} · {user.name}
+            </p>
           </div>
         </div>
+      </div>
 
-        {/* User Info Card */}
-        <div className={`bg-gray-50 rounded-lg p-4 mb-6 relative transition-all duration-200 ${
-          hideSensitiveData ? 'blur-sm select-none' : ''
-        }`}>
-          {hideSensitiveData && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 rounded-lg z-10">
-              <div className="text-center p-4">
-                <EyeOff className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                <p className="text-gray-600 font-medium">Sensitive Data Hidden</p>
-                <p className="text-sm text-gray-500 mt-1">Click "Show All" button to reveal</p>
-              </div>
+      {/* Student info */}
+      <div className="rounded-lg border border-slate-200 bg-white p-5">
+        <div className="flex items-center gap-4">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-800 text-white font-semibold flex-shrink-0">
+            {(user.name || user.email || "U")[0].toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-slate-900 truncate">
+              {user.name}
             </div>
-          )}
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="flex items-center gap-3">
-              <div className="h-12 w-12 rounded-full bg-blue-100 flex items-center justify-center">
-                <User className="h-6 w-6 text-blue-600" />
-              </div>
-              <div>
-                <div className="font-medium text-gray-900">
-                  {user?.fullName || user?.name || "No Name"}
-                </div>
-                <div className="text-sm text-gray-500">Student</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <Mail className="h-5 w-5 text-gray-400" />
-              <div>
-                <div className="font-medium text-gray-900">{user?.email}</div>
-                <div className="text-sm text-gray-500">Email</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <Calendar className="h-5 w-5 text-gray-400" />
-              <div>
-                <div className="font-medium text-gray-900">
-                  {quizResult ? formatDate(quizResult.submittedAt) : "N/A"}
-                </div>
-                <div className="text-sm text-gray-500">Last Attempt</div>
-              </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1">
+                <Mail className="h-3 w-3" />
+                <span className="truncate">{user.email}</span>
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Calendar className="h-3 w-3" />
+                Last attempt: {formatDate(attempts[0]?.submittedAt)}
+              </span>
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Stats Overview */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <div className="text-sm text-gray-500 mb-1">Latest Score</div>
-            <div className={`text-2xl font-bold ${
-              quizResult.isPassed ? "text-green-600" : "text-red-600"
-            }`}>
-              {quizResult.score}%
-            </div>
-            <div className="text-xs text-gray-500 mt-1">
-              {quizResult.isPassed ? "Passed" : "Failed"} ({quiz.passingScore}% to pass)
-            </div>
-          </div>
-          
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <div className="text-sm text-gray-500 mb-1">Time Taken</div>
-            <div className="text-2xl font-bold text-gray-900">
-              {formatTime(quizResult.timeSpent)}
-            </div>
-            <div className="text-xs text-gray-500 mt-1">
-              {quiz?.timeLimit} min limit
-            </div>
-          </div>
-          
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <div className="text-sm text-gray-500 mb-1">Highest Score</div>
-            <div className="text-2xl font-bold text-blue-600">
-              {stats.highest}%
-            </div>
-            <div className="text-xs text-gray-500 mt-1">
-              Best of {stats.totalAttempts} attempts
-            </div>
-          </div>
-          
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <div className="text-sm text-gray-500 mb-1">Average Score</div>
-            <div className="text-2xl font-bold text-purple-600">
-              {stats.average}%
-            </div>
-            <div className="text-xs text-gray-500 mt-1">
-              {stats.passRate}% pass rate
-            </div>
-          </div>
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatTile
+          label="Latest score"
+          value={`${stats.latest}%`}
+          accent={attempts[0]?.isPassed ? "text-green-700" : "text-red-600"}
+          sublabel={attempts[0]?.isPassed ? "Passed" : "Failed"}
+        />
+        <StatTile
+          label="Highest"
+          value={`${stats.highest}%`}
+          sublabel={`of ${attempts.length} ${attempts.length === 1 ? "attempt" : "attempts"}`}
+        />
+        <StatTile
+          label="Average"
+          value={`${stats.average}%`}
+          sublabel={`${stats.passedCount} passed`}
+        />
+        <StatTile
+          label="Passing score"
+          value={`${quiz.passingScore || 70}%`}
+          sublabel={`Time limit: ${quiz.timeLimit || "—"} min`}
+        />
+      </div>
+
+      {/* Attempt history */}
+      <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100">
+          <h2 className="text-sm font-semibold text-slate-900">
+            Attempt history
+          </h2>
         </div>
-
-        {/* Attempt History */}
-        <div className="mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Attempt History</h3>
-          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Attempt #
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Date & Time
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Score
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Time Taken
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Highest
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {allAttempts.map((attempt, index) => (
-                    <tr 
-                      key={attempt.id} 
-                      className={`cursor-pointer hover:bg-gray-50 ${
-                        attempt.id === quizResult.id ? "bg-blue-50" : ""
-                      }`}
-                      onClick={() => setQuizResult(attempt)}
-                    >
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <div className={`w-6 h-6 flex items-center justify-center rounded-full ${
-                            attempt.isHighest ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-                          }`}>
-                            {allAttempts.length - index}
-                          </div>
-                          <span className="font-medium">Attempt {allAttempts.length - index}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {formatDate(attempt.submittedAt)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className={`text-lg font-semibold ${
-                          attempt.isPassed ? "text-green-600" : "text-red-600"
-                        }`}>
-                          {attempt.score}%
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {attempt.isPassed ? (
-                          <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full flex items-center gap-1 w-fit">
-                            <CheckCircle size={12} />
-                            Passed
-                          </span>
-                        ) : (
-                          <span className="px-2 py-1 text-xs bg-red-100 text-red-800 rounded-full flex items-center gap-1 w-fit">
-                            <XCircle size={12} />
-                            Failed
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {formatTime(attempt.timeSpent)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {attempt.isHighest && (
-                          <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
-                            Highest
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        {/* Question Analysis */}
-        {quiz && (
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Question Analysis</h3>
-            <div className="space-y-4">
-              {quiz.questions.map((question, qIndex) => {
-                const studentAnswer = quizResult.answers?.[qIndex];
-                const isCorrect = studentAnswer === question.correctAnswer;
-                
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-slate-50/60 border-b border-slate-100">
+              <tr>
+                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                  #
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Submitted
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Score
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Status
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Time taken
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {attempts.map((attempt, i) => {
+                const isSelected = attempt.id === selectedAttemptId;
                 return (
-                  <div key={qIndex} className="bg-white border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex items-start gap-3 flex-1">
-                        <div className={`w-6 h-6 flex items-center justify-center rounded-full flex-shrink-0 ${
-                          isCorrect ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                        }`}>
-                          {qIndex + 1}
-                        </div>
-                        <div className="flex-1">
-                          <h4 className="font-medium text-gray-900 mb-2">{question.text}</h4>
-                          <div className="space-y-2">
-                            {question.options.map((option, oIndex) => (
-                              <div
-                                key={oIndex}
-                                className={`p-3 border rounded-lg ${
-                                  oIndex === question.correctAnswer
-                                    ? "border-green-500 bg-green-50"
-                                    : oIndex === studentAnswer && !isCorrect
-                                    ? "border-red-500 bg-red-50"
-                                    : "border-gray-200"
-                                }`}
-                              >
-                                <div className="flex items-center gap-3">
-                                  <div className={`w-6 h-6 flex items-center justify-center rounded-full ${
-                                    oIndex === question.correctAnswer
-                                      ? "bg-green-500 text-white"
-                                      : oIndex === studentAnswer && !isCorrect
-                                      ? "bg-red-500 text-white"
-                                      : "bg-gray-100 text-gray-600"
-                                  }`}>
-                                    {String.fromCharCode(65 + oIndex)}
-                                  </div>
-                                  <span className={
-                                    oIndex === question.correctAnswer
-                                      ? "font-medium text-green-700"
-                                      : oIndex === studentAnswer && !isCorrect
-                                      ? "font-medium text-red-700"
-                                      : ""
-                                  }>
-                                    {option}
-                                  </span>
-                                  <div className="ml-auto">
-                                    {oIndex === question.correctAnswer && (
-                                      <span className="text-xs text-green-600 font-medium">Correct Answer</span>
-                                    )}
-                                    {oIndex === studentAnswer && !isCorrect && (
-                                      <span className="text-xs text-red-600 font-medium">Student's Answer</span>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-end ml-4">
-                        <span className="text-sm text-gray-500">Points</span>
-                        <span className={`text-lg font-semibold ${
-                          isCorrect ? "text-green-600" : "text-red-600"
-                        }`}>
-                          {isCorrect ? question.points : 0}/{question.points}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                  <tr
+                    key={attempt.id}
+                    onClick={() => setSelectedAttemptId(attempt.id)}
+                    className={`cursor-pointer border-b border-slate-100 transition-colors ${
+                      isSelected ? "bg-blue-50/50" : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <td className="px-4 py-3 text-sm text-slate-500 tabular-nums">
+                      {attempts.length - i}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600">
+                      {formatDate(attempt.submittedAt)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`text-sm font-medium tabular-nums ${
+                          attempt.isPassed ? "text-green-700" : "text-red-600"
+                        }`}
+                      >
+                        {attempt.score}%
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ${
+                          attempt.isPassed
+                            ? "bg-green-50 text-green-700"
+                            : "bg-red-50 text-red-700"
+                        }`}
+                      >
+                        {attempt.isPassed ? (
+                          <CheckCircle className="h-3 w-3" />
+                        ) : (
+                          <XCircle className="h-3 w-3" />
+                        )}
+                        {attempt.isPassed ? "Passed" : "Failed"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600 inline-flex items-center gap-1">
+                      <Clock className="h-3 w-3 text-slate-400" />
+                      {formatTime(attempt.timeSpent)}
+                    </td>
+                  </tr>
                 );
               })}
-            </div>
-          </div>
-        )}
+            </tbody>
+          </table>
+        </div>
       </div>
+
+      {/* Question breakdown */}
+      {selectedAttempt && quiz.questions && (
+        <div className="space-y-3">
+          <div className="flex items-baseline justify-between gap-3">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Question breakdown
+            </h2>
+            <span className="text-xs text-slate-500">
+              Attempt {attempts.length - attempts.findIndex((a) => a.id === selectedAttemptId)} ·{" "}
+              {formatDate(selectedAttempt.submittedAt)}
+            </span>
+          </div>
+
+          {quiz.questions.map((question, index) => {
+            const answer = selectedAttempt.answers?.[index];
+            return (
+              <QuestionCard
+                key={index}
+                question={question}
+                index={index}
+                studentAnswer={answer}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
