@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { auth, db } from "../../firebase/config";
 import {
   doc, getDoc, collection, query, where, getDocs, limit,
-  addDoc, updateDoc, serverTimestamp,
 } from "firebase/firestore";
 import {
   ArrowRight, BookOpen, Clock, Users, CheckCircle,
@@ -12,6 +11,16 @@ import {
   BookMarked, PlayCircle, Award, TrendingUp,
 } from "lucide-react";
 import Footer from "./footer";
+
+const HERO_IMAGE = {
+  // Download and save to /public/hero.jpg for reliability, then set src: "/hero.jpg"
+  src: "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=800&q=80",
+  alt: "A person reading and taking notes at a desk",
+  credit: {
+    name: "Green Chameleon",
+    url: "https://unsplash.com/@craftedbygc",
+  },
+};
 
 export default function Home() {
   const [courses, setCourses] = useState([]);
@@ -58,11 +67,13 @@ export default function Home() {
       );
       const snap = await getDocs(q);
       const courseIds = snap.docs.map((d) => d.data().courseId);
-      const courses = await Promise.all(
+      const data = await Promise.all(
         courseIds.map(async (courseId) => {
           const courseDoc = await getDoc(doc(db, "courses", courseId));
           if (!courseDoc.exists()) return null;
-          const enrollmentDoc = snap.docs.find((d) => d.data().courseId === courseId);
+          const enrollmentDoc = snap.docs.find(
+            (d) => d.data().courseId === courseId
+          );
           const enrollmentData = enrollmentDoc.data();
           return {
             id: courseId,
@@ -72,46 +83,11 @@ export default function Home() {
           };
         })
       );
-      setEnrolledCourses(courses.filter(Boolean));
+      setEnrolledCourses(data.filter(Boolean));
     } catch (err) {
       console.error("Error fetching enrolled courses:", err);
     } finally {
       setLoadingEnrolled(false);
-    }
-  };
-
-  const handleEnroll = async (courseId) => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) return navigate("/login", { state: { redirectTo: `/course/${courseId}` } });
-    try {
-      const existing = await getDocs(
-        query(
-          collection(db, "enrollments"),
-          where("userId", "==", currentUser.uid),
-          where("courseId", "==", courseId)
-        )
-      );
-      if (!existing.empty) return navigate(`/course/${courseId}`);
-
-      await addDoc(collection(db, "enrollments"), {
-        userId: currentUser.uid,
-        courseId,
-        enrolledAt: serverTimestamp(),
-        progress: 0,
-        completedLessons: [],
-        status: "active",
-        lastAccessed: serverTimestamp(),
-      });
-      const courseRef = doc(db, "courses", courseId);
-      const courseDoc = await getDoc(courseRef);
-      await updateDoc(courseRef, {
-        enrolledCount: (courseDoc.data()?.enrolledCount || 0) + 1,
-        updatedAt: serverTimestamp(),
-      });
-      navigate(`/course/${courseId}`);
-    } catch (err) {
-      console.error("Enroll error:", err);
-      alert("Failed to enroll. Please try again.");
     }
   };
 
@@ -143,7 +119,6 @@ export default function Home() {
     return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   };
 
-  // ==================== COMPONENTS ====================
   const CourseCard = ({ course }) => (
     <Link
       to={`/course-details/${course.id}`}
@@ -238,50 +213,9 @@ export default function Home() {
     </div>
   );
 
-  const ProductPreview = () => (
-    <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-      <div className="flex items-center gap-1.5 border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
-        <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
-        <span className="h-2.5 w-2.5 rounded-full bg-slate-300" />
-        <div className="ml-3 h-5 flex-1 rounded-sm bg-white border border-slate-200" />
-      </div>
-      <div className="flex">
-        <div className="hidden sm:block w-32 border-r border-slate-200 bg-slate-50/60 p-3 space-y-2">
-          <div className="h-2 w-16 rounded bg-slate-200" />
-          <div className="h-2 w-20 rounded bg-blue-800/30" />
-          <div className="h-2 w-14 rounded bg-slate-200" />
-          <div className="h-2 w-20 rounded bg-slate-200" />
-          <div className="h-2 w-16 rounded bg-slate-200" />
-        </div>
-        <div className="flex-1 p-4">
-          <div className="flex items-center justify-between">
-            <div className="h-3 w-24 rounded bg-slate-200" />
-            <div className="h-3 w-10 rounded bg-blue-800" />
-          </div>
-          <div className="mt-3 h-1.5 w-full rounded bg-slate-100 overflow-hidden">
-            <div className="h-full w-2/3 rounded bg-green-600" />
-          </div>
-          <div className="mt-4 space-y-2.5">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="flex items-center gap-2">
-                <CheckCircle className={`h-4 w-4 ${i < 2 ? "text-green-600" : "text-slate-200"}`} />
-                <div className={`h-2.5 rounded ${i < 2 ? "w-40 bg-slate-300" : "w-32 bg-slate-200"}`} />
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 aspect-video rounded border border-slate-200 bg-slate-50 flex items-center justify-center">
-            <PlayCircle className="h-8 w-8 text-blue-800" />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ==================== RENDER ====================
   return (
     <div className="min-h-screen bg-white text-slate-900">
-      {/* Navbar */}
+      {/* Nav */}
       <nav className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
           <div className="flex h-16 items-center justify-between">
@@ -482,13 +416,34 @@ export default function Home() {
             </div>
 
             <div className="lg:col-span-6">
-              <ProductPreview />
+              <figure>
+                <div className="rounded-xl border border-slate-200 overflow-hidden bg-slate-100">
+                  <img
+                    src={HERO_IMAGE.src}
+                    alt={HERO_IMAGE.alt}
+                    className="w-full h-auto object-cover aspect-[4/3]"
+                    loading="eager"
+                  />
+                </div>
+                <figcaption className="mt-2 text-[11px] text-slate-400 text-right">
+                  Photo by{" "}
+                  <a
+                    href={HERO_IMAGE.credit.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-slate-500 hover:text-slate-700 underline underline-offset-2"
+                  >
+                    {HERO_IMAGE.credit.name}
+                  </a>{" "}
+                  on Unsplash
+                </figcaption>
+              </figure>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Continue Learning */}
+      {/* Continue learning */}
       {user && enrolledCourses.length > 0 && (
         <section className="border-b border-slate-200 bg-slate-50/60">
           <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-14">
@@ -522,7 +477,7 @@ export default function Home() {
         </section>
       )}
 
-      {/* Featured Courses */}
+      {/* Courses */}
       <section id="courses" className="border-b border-slate-200">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-16 md:py-20">
           <div className="max-w-2xl mb-10">
@@ -560,7 +515,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Why Bizika */}
+      {/* Features */}
       <section id="features" className="border-b border-slate-200 bg-slate-50/60">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-16 md:py-20">
           <div className="max-w-2xl mb-12">
